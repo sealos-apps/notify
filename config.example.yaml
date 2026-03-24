@@ -1,0 +1,130 @@
+# Sealos Notify Configuration Example
+
+# Server configuration
+server:
+  address: ":8080"
+  readTimeout: 30s
+  writeTimeout: 30s
+  idleTimeout: 60s
+
+# Database configuration
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  dbname: sealos_notify
+  sslMode: disable
+  maxOpenConns: 25
+  maxIdleConns: 5
+  connMaxLifetime: 5m
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+  debug: false
+
+# Dispatcher configuration
+dispatcher:
+  enabled: true
+  interval: 10s
+  batchSize: 100
+  leaseTimeout: 5m
+
+# Default notification settings
+defaults:
+  timeoutSeconds: 10
+  maxRetry: 3
+  retryBackoffSeconds: [30, 120, 300]
+
+# Notification channels
+channels:
+  inapp:
+    enabled: true
+    provider: notification-crd
+  email:
+    enabled: true
+    provider: smtp-default
+  sms:
+    enabled: true
+    provider: aliyun-sms-default
+  voice:
+    enabled: true
+    provider: volcengine-vms-default
+  feishu_webhook:
+    enabled: true
+    provider: feishu-webhook-default
+  feishu_app:
+    enabled: true
+    provider: feishu-app-default
+
+# Channel providers
+providers:
+  notification-crd:
+    type: inapp_crd
+    namespace: sealos
+
+  smtp-default:
+    type: smtp
+    host: smtp.example.com
+    port: 465
+    username: notify@example.com
+    passwordFromSecret:
+      name: notify-smtp-secret
+      key: password
+    from: notify@example.com
+    useTLS: true
+
+  aliyun-sms-default:
+    type: aliyun_sms
+    endpoint: dysmsapi.aliyuncs.com
+    accessKeyIdFromSecret:
+      name: notify-sms-secret
+      key: accessKeyId
+    accessKeySecretFromSecret:
+      name: notify-sms-secret
+      key: accessKeySecret
+    signName: SEALOS
+
+  volcengine-vms-default:
+    type: volcengine_vms
+    endpoint: vms.volcengineapi.com
+    apiKeyFromSecret:
+      name: notify-vms-secret
+      key: apiKey
+    apiSecretFromSecret:
+      name: notify-vms-secret
+      key: apiSecret
+    numberPool: default
+
+  feishu-webhook-default:
+    type: feishu_webhook
+    webhookFromSecret:
+      name: notify-feishu-webhook-secret
+      key: url
+
+  feishu-app-default:
+    type: feishu_app
+    appIdFromSecret:
+      name: notify-feishu-app-secret
+      key: appId
+    appSecretFromSecret:
+      name: notify-feishu-app-secret
+      key: appSecret
+
+# Notification templates
+templates:
+  default-email:
+    channel: email
+    subject: "{{ .title }}"
+    body: "{{ .content }}"
+  default-sms:
+    channel: sms
+    templateCode: SMS_001
+  default-voice:
+    channel: voice
+    templateCode: VMS_001
+  default-feishu:
+    channel: feishu_webhook
+    msgType: text

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sealos-notify
+  namespace: sealos
+  labels:
+    app: sealos-notify
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sealos-notify
+  template:
+    metadata:
+      labels:
+        app: sealos-notify
+    spec:
+      containers:
+      - name: sealos-notify
+        image: ghcr.io/labring/sealos-notify:latest
+        imagePullPolicy: IfNotPresent
+        args:
+          - --config
+          - /etc/sealos-notify/config.yaml
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        volumeMounts:
+        - name: config
+          mountPath: /etc/sealos-notify
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: config
+        configMap:
+          name: sealos-notify-config

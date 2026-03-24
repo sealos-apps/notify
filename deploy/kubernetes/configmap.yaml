@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sealos-notify-config
+  namespace: sealos
+data:
+  config.yaml: |
+    # Server configuration
+    server:
+      address: ":8080"
+      readTimeout: 30s
+      writeTimeout: 30s
+      idleTimeout: 60s
+
+    # Database configuration
+    database:
+      host: postgres-service
+      port: 5432
+      user: postgres
+      password: ""  # Set via environment variable
+      dbname: sealos_notify
+      sslMode: disable
+      maxOpenConns: 25
+      maxIdleConns: 5
+      connMaxLifetime: 5m
+
+    # Logging configuration
+    logging:
+      level: info
+      format: json
+      debug: false
+
+    # Dispatcher configuration
+    dispatcher:
+      enabled: true
+      interval: 10s
+      batchSize: 100
+      leaseTimeout: 5m
+
+    # Default notification settings
+    defaults:
+      timeoutSeconds: 10
+      maxRetry: 3
+      retryBackoffSeconds: [30, 120, 300]
+
+    # Notification channels
+    channels:
+      inapp:
+        enabled: true
+        provider: notification-crd
+      email:
+        enabled: false
+        provider: smtp-default
+
+    # Channel providers
+    providers:
+      notification-crd:
+        type: inapp_crd
+        namespace: sealos
