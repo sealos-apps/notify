@@ -130,21 +130,5 @@ providers:
     #   phone - Phone call alert    (电话加急)
     urgentType: "app"
 
-# Notification templates
-templates:
-  default-email:
-    channel: email
-    subject: "{{ .title }}"
-    body: "{{ .content }}"
-  default-sms:
-    channel: sms
-    templateCode: SMS_001
-  default-voice:
-    channel: voice
-    templateCode: VMS_001
-  default-feishu-webhook:
-    channel: feishu_webhook
-    msgType: text
-  default-feishu-app:
-    channel: feishu_app
-    msgType: text
+# Templates are managed at runtime via the REST API (/api/v1/templates).
+# No static template configuration is needed here.

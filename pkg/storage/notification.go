@@ -27,7 +27,7 @@ func NewNotificationStore(db *gorm.DB, logger *log.Entry) *NotificationStore {
 	return &NotificationStore{db: db, logger: logger}
 }
 
-// Create creates a new notification, handling idempotency conflicts gracefully
+// Create creates a new notification. On idempotency_key conflict the existing record is loaded.
 func (s *NotificationStore) Create(ctx context.Context, notification *database.Notification) error {
 	if notification.ID == "" {
 		notification.ID = uuid.New().String()
@@ -41,7 +41,6 @@ func (s *NotificationStore) Create(ctx context.Context, notification *database.N
 		return fmt.Errorf("failed to create notification: %w", result.Error)
 	}
 
-	// RowsAffected == 0 means idempotency_key conflict — fetch existing record
 	if result.RowsAffected == 0 {
 		return s.GetByIdempotencyKey(ctx, notification.IdempotencyKey, notification)
 	}
@@ -62,7 +61,7 @@ func (s *NotificationStore) GetByID(ctx context.Context, id string) (*database.N
 	return notification, nil
 }
 
-// GetByIdempotencyKey retrieves a notification by idempotency key and fills the provided struct
+// GetByIdempotencyKey fills the provided notification struct with data matched by key
 func (s *NotificationStore) GetByIdempotencyKey(ctx context.Context, key string, notification *database.Notification) error {
 	result := s.db.WithContext(ctx).
 		Where("idempotency_key = ?", key).

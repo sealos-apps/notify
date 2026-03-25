@@ -32,6 +32,7 @@ type Server struct {
 	recipientStore       *storage.RecipientStore
 	deliveryTaskStore    *storage.DeliveryTaskStore
 	deliveryAttemptStore *storage.DeliveryAttemptStore
+	templateStore        *storage.TemplateStore
 	logger               *log.Entry
 	mu                   sync.RWMutex
 	serverCtx            context.Context
@@ -42,7 +43,6 @@ func New(cfg *config.GlobalConfig, configContent []byte, logger *log.Entry) *Ser
 	if logger == nil {
 		logger = log.WithField("component", "server")
 	}
-
 	return &Server{
 		config:        cfg,
 		configContent: configContent,
@@ -77,12 +77,13 @@ func (s *Server) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	// Initialize stores using the GORM instance
+	// Initialize stores
 	gormDB := s.db.GORM()
 	s.notificationStore = storage.NewNotificationStore(gormDB, s.logger.WithField("subcomponent", "notification_store"))
 	s.recipientStore = storage.NewRecipientStore(gormDB, s.logger.WithField("subcomponent", "recipient_store"))
 	s.deliveryTaskStore = storage.NewDeliveryTaskStore(gormDB, s.logger.WithField("subcomponent", "delivery_task_store"))
 	s.deliveryAttemptStore = storage.NewDeliveryAttemptStore(gormDB, s.logger.WithField("subcomponent", "delivery_attempt_store"))
+	s.templateStore = storage.NewTemplateStore(gormDB, s.logger.WithField("subcomponent", "template_store"))
 
 	// Initialize adapters
 	if err := s.initAdapters(); err != nil {
@@ -95,6 +96,7 @@ func (s *Server) Init(ctx context.Context) error {
 		s.notificationStore,
 		s.recipientStore,
 		s.deliveryTaskStore,
+		s.templateStore,
 		s.logger.WithField("subcomponent", "engine"),
 	)
 
@@ -105,23 +107,22 @@ func (s *Server) Init(ctx context.Context) error {
 		s.deliveryAttemptStore,
 		s.notificationStore,
 		s.recipientStore,
+		s.templateStore,
 		s.adapters,
 		s.logger.WithField("subcomponent", "dispatcher"),
 	)
 
-	// Start dispatcher
 	if err := s.dispatcher.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start dispatcher: %w", err)
 	}
 
-	// Setup HTTP server
 	s.setupHTTPServer()
 
 	s.logger.Info("Server initialized successfully")
 	return nil
 }
 
-// initAdapters initializes channel adapters from the configured providers
+// initAdapters initializes channel adapters from configured providers
 func (s *Server) initAdapters() error {
 	s.adapters = make(map[string]adapter.Adapter)
 
@@ -175,14 +176,11 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 
 		c.Next()
 
-		latency := time.Since(start)
-		status := c.Writer.Status()
-
 		s.logger.WithFields(log.Fields{
 			"method":  method,
 			"path":    path,
-			"status":  status,
-			"latency": latency,
+			"status":  c.Writer.Status(),
+			"latency": time.Since(start),
 		}).Info("HTTP request")
 	}
 }
@@ -190,11 +188,9 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 // Serve starts the HTTP server
 func (s *Server) Serve() error {
 	s.logger.WithField("address", s.config.Server.Address).Info("Starting HTTP server")
-
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
-
 	return nil
 }
 
@@ -207,13 +203,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.logger.WithError(err).Error("Failed to stop dispatcher")
 		}
 	}
-
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			s.logger.WithError(err).Error("Failed to stop HTTP server")
 		}
 	}
-
 	if s.db != nil {
 		s.db.Close()
 	}
@@ -228,7 +222,6 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 	defer s.mu.Unlock()
 
 	s.logger.Info("Reloading server configuration")
-
 	s.config.ApplyHotReload(newConfig)
 	s.configContent = newConfigContent
 

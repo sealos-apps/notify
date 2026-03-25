@@ -112,14 +112,27 @@ func IsNoRows(err error) bool {
 
 // schema is the SQL to initialize the database tables, indexes, and triggers
 const schema = `
--- Notifications table
+-- Templates table (must exist before notifications for FK safety; no FK dependency)
+CREATE TABLE IF NOT EXISTS templates (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    channel VARCHAR(50) NOT NULL,
+    description TEXT,
+    subject TEXT,
+    body TEXT,
+    template_code VARCHAR(255),
+    msg_type VARCHAR(50),
+    params JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_templates_channel ON templates(channel);
+
+-- Notifications table (content-free; all data lives in recipients/templates)
 CREATE TABLE IF NOT EXISTS notifications (
     id VARCHAR(64) PRIMARY KEY,
     idempotency_key VARCHAR(255) UNIQUE NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    template VARCHAR(255),
-    variables_json JSONB,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -128,12 +141,11 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 
--- Notification recipients table
+-- Notification recipients table (params = all KVs: identifiers + template variables)
 CREATE TABLE IF NOT EXISTS notification_recipients (
     id VARCHAR(64) PRIMARY KEY,
     notification_id VARCHAR(64) NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
-    recipient_type VARCHAR(50) NOT NULL,
-    recipient_value VARCHAR(255) NOT NULL,
+    params JSONB NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -146,6 +158,7 @@ CREATE TABLE IF NOT EXISTS delivery_tasks (
     recipient_id VARCHAR(64) NOT NULL REFERENCES notification_recipients(id) ON DELETE CASCADE,
     channel VARCHAR(50) NOT NULL,
     provider VARCHAR(100) NOT NULL,
+    template_name VARCHAR(255) NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     retry_count INTEGER NOT NULL DEFAULT 0,
     max_retry INTEGER NOT NULL DEFAULT 3,
@@ -202,6 +215,10 @@ END;
 $$ language 'plpgsql';
 
 -- Create triggers
+DROP TRIGGER IF EXISTS update_templates_updated_at ON templates;
+CREATE TRIGGER update_templates_updated_at BEFORE UPDATE ON templates
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 DROP TRIGGER IF EXISTS update_notifications_updated_at ON notifications;
 CREATE TRIGGER update_notifications_updated_at BEFORE UPDATE ON notifications
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -18,13 +18,11 @@ func (s *Server) setupRoutes(router *gin.Engine) {
 		v1.GET("/notifications/:id", s.handleGetNotification)
 		v1.GET("/notifications/:id/deliveries", s.handleGetDeliveries)
 
-		// Configuration (future implementation)
-		// v1.GET("/config", s.handleGetConfig)
-		// v1.PUT("/config", s.handleUpdateConfig)
-		// v1.PATCH("/config", s.handlePatchConfig)
-		// v1.POST("/config/validate", s.handleValidateConfig)
-
-		// Test (future implementation)
-		// v1.POST("/test/send", s.handleTestSend)
+		// Templates
+		v1.POST("/templates", s.handleCreateTemplate)
+		v1.GET("/templates", s.handleListTemplates)
+		v1.GET("/templates/:name", s.handleGetTemplate)
+		v1.PUT("/templates/:name", s.handleUpdateTemplate)
+		v1.DELETE("/templates/:name", s.handleDeleteTemplate)
 	}
 }

@@ -17,22 +17,46 @@ const (
 	ChannelTypeFeishuApp     ChannelType = "feishu_app"
 )
 
-// SendRequest contains the information needed to send a notification
+// RecipientIdentifierKeys returns the params map keys that identify a recipient
+// for the given channel. The first key found in a recipient's params is used as
+// the delivery address.
+func RecipientIdentifierKeys(channelName string) []string {
+	switch channelName {
+	case "email":
+		return []string{"email"}
+	case "sms", "voice":
+		return []string{"phone"}
+	case "inapp":
+		return []string{"user_id"}
+	case "feishu_app", "feishu_webhook":
+		return []string{"feishu_user_id", "email"}
+	default:
+		return nil
+	}
+}
+
+// SendRequest contains all information needed by an adapter to send one notification.
+// Content fields are pre-rendered by the dispatcher before calling Send.
 type SendRequest struct {
-	// Recipient information
-	RecipientType  string
+	// RecipientValue is the resolved delivery address (email, phone, open_id, etc.)
 	RecipientValue string
 
-	// Message content
-	Title   string
-	Content string
+	// Subject is the rendered email subject (empty for non-email channels)
 	Subject string
 
-	// Template information
-	TemplateCode string
-	Variables    map[string]interface{}
+	// Body is the rendered message body
+	Body string
 
-	// Additional metadata
+	// TemplateCode is the provider-side template identifier used by SMS / voice channels
+	TemplateCode string
+
+	// Variables contains the raw recipient params as strings, passed to SMS/voice providers
+	Variables map[string]string
+
+	// MsgType is the message format hint (e.g. "text", "post", "interactive" for Feishu)
+	MsgType string
+
+	// Metadata holds any extra per-send key-value data
 	Metadata map[string]string
 }
 

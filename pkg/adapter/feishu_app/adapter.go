@@ -61,9 +61,20 @@ func New(data map[string]interface{}) (*Adapter, error) {
 }
 
 // Send sends a notification via the Feishu App channel.
-// If UrgentType is configured, it also sends an urgent follow-up after the message is created.
+// Body is expected to be pre-rendered by the dispatcher. MsgType from SendRequest
+// takes precedence over the adapter-level default.
+// If UrgentType is configured, an urgent follow-up is sent after the message is created.
 func (a *Adapter) Send(ctx context.Context, req *adapter.SendRequest) (*adapter.SendResponse, error) {
-	content, err := a.buildContent(req)
+	// Use per-request MsgType if provided, fall back to adapter config
+	msgType := req.MsgType
+	if msgType == "" {
+		msgType = a.config.MsgType
+	}
+	if msgType == "" {
+		msgType = "text"
+	}
+
+	content, err := a.buildContent(req.Body, msgType)
 	if err != nil {
 		return &adapter.SendResponse{Success: false, Error: err}, nil
 	}
@@ -72,7 +83,7 @@ func (a *Adapter) Send(ctx context.Context, req *adapter.SendRequest) (*adapter.
 		ReceiveIdType(a.config.ReceiveIDType).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(req.RecipientValue).
-			MsgType(a.config.MsgType).
+			MsgType(msgType).
 			Content(content).
 			Build()).
 		Build()
@@ -159,18 +170,18 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 	return nil
 }
 
-// buildContent builds the JSON message content for the configured message type
-func (a *Adapter) buildContent(req *adapter.SendRequest) (string, error) {
-	switch a.config.MsgType {
-	case "text":
-		b, err := json.Marshal(map[string]string{"text": req.Content})
+// buildContent wraps the rendered body in the format required by the Feishu API
+func (a *Adapter) buildContent(body, msgType string) (string, error) {
+	switch msgType {
+	case "text", "":
+		b, err := json.Marshal(map[string]string{"text": body})
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal text content: %w", err)
 		}
 		return string(b), nil
 	default:
-		// For post/interactive/etc., Content is expected to already be valid JSON
-		return req.Content, nil
+		// For post/interactive/etc., body must already be valid Feishu-format JSON
+		return body, nil
 	}
 }
 
