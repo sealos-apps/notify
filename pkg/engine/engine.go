@@ -13,29 +13,56 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ChannelRequest specifies the template and render params for one channel.
+// All recipients within a single notification receive identical rendered content.
+//
+// Example:
+//
+//	{
+//	  "template": "feishu-incident",
+//	  "params":   {"incident": "DB down", "severity": "P0"}
+//	}
+type ChannelRequest struct {
+	// Template is the name of the template stored in the database (required)
+	Template string `json:"template"`
+	// Params are the key-value pairs injected into the template at render time
+	Params map[string]string `json:"params,omitempty"`
+}
+
+// RecipientRequest represents a single notification recipient.
+// Type identifies the address kind (e.g. "email", "phone", "feishu_user_id", "user_id").
+// Value is the actual address for that type.
+type RecipientRequest struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
 // SendNotificationRequest is the API request payload for sending a notification.
 //
-// channels maps each channel name to the template name to use for that channel.
-// recipients is a list of per-user KV maps. Each map must contain at least one
-// channel identifier key (e.g. "email", "phone", "feishu_user_id", "user_id")
-// and may contain any number of additional template variable keys.
+// channels maps each channel name to a ChannelRequest (template + render params).
+// recipients is a list of {type, value} address entries. Each entry is matched to
+// channels by type: a recipient is assigned to a channel when its type appears in
+// that channel's valid identifier types.
 //
 // Example:
 //
 //	{
 //	  "idempotencyKey": "incident-001",
-//	  "channels": {"feishu_app": "feishu-incident", "email": "email-incident"},
+//	  "channels": {
+//	    "feishu_app": {"template": "feishu-incident", "params": {"incident": "DB down", "severity": "P0"}},
+//	    "email":      {"template": "email-incident",  "params": {"incident": "DB down", "severity": "P0"}}
+//	  },
 //	  "recipients": [
-//	    {"feishu_user_id": "ou_xxx", "email": "alice@example.com", "name": "Alice", "incident": "DB down"},
-//	    {"feishu_user_id": "ou_yyy", "email": "bob@example.com",   "name": "Bob",   "incident": "DB down"}
+//	    {"type": "feishu_user_id", "value": "ou_xxx"},
+//	    {"type": "email",          "value": "alice@example.com"}
 //	  ]
 //	}
 type SendNotificationRequest struct {
 	IdempotencyKey string `json:"idempotencyKey"`
-	// Channels maps channel name → template name
-	Channels map[string]string `json:"channels"`
-	// Recipients is a list of per-user param maps (identifiers + template variables)
-	Recipients []map[string]string `json:"recipients"`
+	// Channels maps channel name → template + params
+	Channels map[string]ChannelRequest `json:"channels"`
+	// Recipients is a list of {type, value} address entries
+	Recipients []RecipientRequest `json:"recipients"`
 }
 
 // SendNotificationResponse is the response returned after a notification is accepted
@@ -92,18 +119,13 @@ func (e *Engine) SendNotification(ctx context.Context, req *SendNotificationRequ
 		return nil, fmt.Errorf("failed to create notification: %w", err)
 	}
 
-	// Create one recipient record per user entry
+	// Create one recipient record per address entry
 	recipients := make([]*database.NotificationRecipient, 0, len(req.Recipients))
-	for _, params := range req.Recipients {
-		// Convert map[string]string → JSONMap
-		jsonParams := make(database.JSONMap, len(params))
-		for k, v := range params {
-			jsonParams[k] = v
-		}
+	for _, r := range req.Recipients {
 		recipients = append(recipients, &database.NotificationRecipient{
 			ID:             uuid.New().String(),
 			NotificationID: notification.ID,
-			Params:         jsonParams,
+			Params:         database.JSONMap{"type": r.Type, "value": r.Value},
 		})
 	}
 	if err := e.recipientStore.Create(ctx, recipients); err != nil {
@@ -144,7 +166,7 @@ func (e *Engine) validateRequest(ctx context.Context, req *SendNotificationReque
 	}
 
 	// Validate each channel and its template
-	for channelName, templateName := range req.Channels {
+	for channelName, channelReq := range req.Channels {
 		ch, ok := e.config.Channels[channelName]
 		if !ok {
 			return fmt.Errorf("channel %q not found in configuration", channelName)
@@ -152,17 +174,17 @@ func (e *Engine) validateRequest(ctx context.Context, req *SendNotificationReque
 		if !ch.Enabled {
 			return fmt.Errorf("channel %q is disabled", channelName)
 		}
-		if templateName == "" {
+		if channelReq.Template == "" {
 			return fmt.Errorf("channel %q: template name must not be empty", channelName)
 		}
 
 		// Verify template exists in DB and belongs to the correct channel
-		tpl, err := e.templateStore.GetByName(ctx, templateName)
+		tpl, err := e.templateStore.GetByName(ctx, channelReq.Template)
 		if err != nil {
-			return fmt.Errorf("channel %q: template %q not found", channelName, templateName)
+			return fmt.Errorf("channel %q: template %q not found", channelName, channelReq.Template)
 		}
 		if tpl.Channel != channelName {
-			return fmt.Errorf("channel %q: template %q belongs to channel %q", channelName, templateName, tpl.Channel)
+			return fmt.Errorf("channel %q: template %q belongs to channel %q", channelName, channelReq.Template, tpl.Channel)
 		}
 	}
 
@@ -171,31 +193,39 @@ func (e *Engine) validateRequest(ctx context.Context, req *SendNotificationReque
 
 // generateDeliveryTasks creates one task per (recipient, channel) pair where
 // the recipient's params contain an identifier key compatible with the channel.
+// Template params from the channel request are stored on the task itself.
 func (e *Engine) generateDeliveryTasks(
 	notificationID string,
 	recipients []*database.NotificationRecipient,
-	channels map[string]string,
+	channels map[string]ChannelRequest,
 ) ([]*database.DeliveryTask, error) {
 	var tasks []*database.DeliveryTask
 
 	for _, recipient := range recipients {
-		for channelName, templateName := range channels {
+		for channelName, channelReq := range channels {
 			ch := e.config.Channels[channelName]
 			if !ch.Enabled {
 				continue
 			}
 
-			// Check if the recipient has an identifier for this channel
-			identifierKeys := adapter.RecipientIdentifierKeys(channelName)
-			hasIdentifier := false
-			for _, key := range identifierKeys {
-				if _, ok := recipient.Params[key]; ok {
-					hasIdentifier = true
+			// Check if recipient type is valid for this channel
+			recipientType, _ := recipient.Params["type"].(string)
+			validTypes := adapter.RecipientIdentifierKeys(channelName)
+			matched := false
+			for _, t := range validTypes {
+				if t == recipientType {
+					matched = true
 					break
 				}
 			}
-			if !hasIdentifier {
+			if !matched {
 				continue
+			}
+
+			// Convert template params to JSONMap
+			tplParams := make(database.JSONMap, len(channelReq.Params))
+			for k, v := range channelReq.Params {
+				tplParams[k] = v
 			}
 
 			tasks = append(tasks, &database.DeliveryTask{
@@ -204,7 +234,8 @@ func (e *Engine) generateDeliveryTasks(
 				RecipientID:    recipient.ID,
 				Channel:        channelName,
 				Provider:       ch.Provider,
-				TemplateName:   templateName,
+				TemplateName:   channelReq.Template,
+				TemplateParams: tplParams,
 				Status:         database.DeliveryTaskStatusPending,
 				RetryCount:     0,
 				MaxRetry:       e.config.Defaults.MaxRetry,

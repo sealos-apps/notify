@@ -197,24 +197,18 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 		return
 	}
 
-	// 4. Extract recipient identifier value for this channel
-	recipientValue := ""
-	for _, key := range adapter.RecipientIdentifierKeys(task.Channel) {
-		if v, ok := recipient.Params[key]; ok {
-			recipientValue = fmt.Sprint(v)
-			break
-		}
-	}
+	// 4. Extract recipient delivery address
+	recipientValue, _ := recipient.Params["value"].(string)
 	if recipientValue == "" {
-		msg := fmt.Sprintf("no identifier key found for channel %q in recipient params", task.Channel)
+		msg := "recipient has no delivery address (value field is empty)"
 		logger.Error(msg)
 		d.handleTaskFailure(ctx, task, msg, nil)
 		return
 	}
 
-	// 5. Render template (convert params to map[string]interface{} for template execution)
-	renderParams := make(map[string]interface{}, len(recipient.Params))
-	for k, v := range recipient.Params {
+	// 5. Render template using the shared params stored on the task
+	renderParams := make(map[string]interface{}, len(task.TemplateParams))
+	for k, v := range task.TemplateParams {
 		renderParams[k] = v
 	}
 	rendered, err := render.Template(tpl, renderParams)
@@ -225,8 +219,8 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 	}
 
 	// 6. Build string variables map for SMS/voice providers
-	strVars := make(map[string]string, len(recipient.Params))
-	for k, v := range recipient.Params {
+	strVars := make(map[string]string, len(task.TemplateParams))
+	for k, v := range task.TemplateParams {
 		strVars[k] = fmt.Sprint(v)
 	}
 

@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS delivery_tasks (
     channel VARCHAR(50) NOT NULL,
     provider VARCHAR(100) NOT NULL,
     template_name VARCHAR(255) NOT NULL,
+    template_params JSONB,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     retry_count INTEGER NOT NULL DEFAULT 0,
     max_retry INTEGER NOT NULL DEFAULT 3,

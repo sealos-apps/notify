@@ -65,9 +65,9 @@ type Notification struct {
 // TableName sets the table name for GORM
 func (Notification) TableName() string { return "notifications" }
 
-// NotificationRecipient stores all KV data for one recipient.
-// Params contains both channel identifier keys (email, phone, feishu_user_id, user_id)
-// and template variable keys used during rendering.
+// NotificationRecipient stores routing identifier keys for one recipient.
+// Params contains only channel identifier keys (email, phone, feishu_user_id, user_id).
+// Template variables are stored on DeliveryTask.TemplateParams and are shared across all recipients.
 type NotificationRecipient struct {
 	ID             string    `gorm:"primaryKey;column:id;type:varchar(64)"              json:"id"`
 	NotificationID string    `gorm:"column:notification_id;type:varchar(64);not null;index" json:"notificationId"`
@@ -79,6 +79,7 @@ type NotificationRecipient struct {
 func (NotificationRecipient) TableName() string { return "notification_recipients" }
 
 // DeliveryTask represents a task to deliver a notification to one recipient via one channel.
+// TemplateParams holds the render variables shared by all recipients of this notification+channel.
 type DeliveryTask struct {
 	ID             string             `gorm:"primaryKey;column:id;type:varchar(64)"              json:"id"`
 	NotificationID string             `gorm:"column:notification_id;type:varchar(64);not null;index" json:"notificationId"`
@@ -86,6 +87,7 @@ type DeliveryTask struct {
 	Channel        string             `gorm:"column:channel;type:varchar(50);not null"            json:"channel"`
 	Provider       string             `gorm:"column:provider;type:varchar(100);not null"          json:"provider"`
 	TemplateName   string             `gorm:"column:template_name;type:varchar(255);not null"     json:"templateName"`
+	TemplateParams JSONMap            `gorm:"column:template_params;type:jsonb"                   json:"templateParams,omitempty"`
 	Status         DeliveryTaskStatus `gorm:"column:status;type:varchar(50);not null;default:pending;index" json:"status"`
 	RetryCount     int                `gorm:"column:retry_count;not null;default:0"               json:"retryCount"`
 	MaxRetry       int                `gorm:"column:max_retry;not null;default:3"                 json:"maxRetry"`

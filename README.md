@@ -73,17 +73,23 @@ curl -X POST http://localhost:8080/api/v1/templates \
     "name": "feishu-alert",
     "channel": "feishu_app",
     "msgType": "text",
-    "body": "【告警】{{ .incident }} 影响用户：{{ .name }}"
+    "body": "【告警】{{ .incident }}（严重级别：{{ .severity }}）"
   }'
 
-# 再发送通知（引用模板名）
+# 再发送通知（模板参数放在 channels 里，recipients 用 type+value 结构）
 curl -X POST http://localhost:8080/api/v1/notifications \
   -H "Content-Type: application/json" \
   -d '{
     "idempotencyKey": "incident-001",
-    "channels": {"feishu_app": "feishu-alert"},
+    "channels": {
+      "feishu_app": {
+        "template": "feishu-alert",
+        "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+      }
+    },
     "recipients": [
-      {"feishu_user_id": "ou_xxxxxxxx", "name": "Alice", "incident": "DB 主节点不可用"}
+      {"type": "feishu_user_id", "value": "ou_xxxxxxxx"},
+      {"type": "feishu_user_id", "value": "ou_yyyyyyyy"}
     ]
   }'
 ```
@@ -100,40 +106,38 @@ curl -X POST http://localhost:8080/api/v1/notifications \
 {
   "idempotencyKey": "唯一标识，相同 key 的请求只执行一次",
   "channels": {
-    "feishu_app": "feishu-alert",
-    "email":      "email-alert"
+    "feishu_app": {
+      "template": "feishu-alert",
+      "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+    },
+    "email": {
+      "template": "email-alert",
+      "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+    }
   },
   "recipients": [
-    {
-      "feishu_user_id": "ou_xxxxxxxx",
-      "email":          "alice@example.com",
-      "name":           "Alice",
-      "incident":       "DB 主节点不可用"
-    },
-    {
-      "feishu_user_id": "ou_yyyyyyyy",
-      "email":          "bob@example.com",
-      "name":           "Bob",
-      "incident":       "DB 主节点不可用"
-    }
+    {"type": "feishu_user_id", "value": "ou_xxxxxxxx"},
+    {"type": "email",          "value": "alice@example.com"},
+    {"type": "phone",          "value": "+8613800000000"}
   ]
 }
 ```
 
-- `channels`：`map[渠道名 → 模板名]`，指定每个渠道使用的模板
-- `recipients`：每个元素是一个用户的 KV map，包含：
-  - **渠道标识键**（见下表）——用于确定消息发送目标
-  - **模板变量键**——渲染模板时自动注入
-  - 同一用户只需一个 map，可同时包含多个渠道的标识键和模板变量
+- `channels`：`map[渠道名 → {template, params}]`
+  - `template`：模板名称（必填）
+  - `params`：渲染模板时注入的参数，所有接收人共享同一份渲染结果
+- `recipients`：`{type, value}` 列表，每条记录是一个接收地址
+  - `type`：地址类型（见下表），用于匹配渠道
+  - `value`：实际地址（open_id、邮箱、手机号等）
 
-渠道标识键对照表：
+recipient `type` 与渠道的对应关系：
 
-| 渠道                           | 标识键                        |
-|--------------------------------|-------------------------------|
-| `email`                        | `email`                       |
-| `sms`, `voice`                 | `phone`                       |
-| `inapp`                        | `user_id`                     |
-| `feishu_app`, `feishu_webhook` | `feishu_user_id` 或 `email`   |
+| `type` 值        | 匹配的渠道                     |
+|------------------|--------------------------------|
+| `email`          | `email`、`feishu_app`、`feishu_webhook` |
+| `phone`          | `sms`、`voice`                 |
+| `user_id`        | `inapp`                        |
+| `feishu_user_id` | `feishu_app`、`feishu_webhook` |
 
 **响应：**
 
