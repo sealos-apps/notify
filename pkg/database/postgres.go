@@ -4,18 +4,19 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/lib/pq"
 	log "github.com/sirupsen/logrus"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // DB represents a database connection
 type DB struct {
-	pool   *pgxpool.Pool
+	gormDB *gorm.DB
 	logger *log.Entry
 }
 
@@ -39,58 +40,78 @@ func New(ctx context.Context, cfg Config, logger *log.Entry) (*DB, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DBName, cfg.SSLMode,
+		"host=%s user=%s password=%s dbname=%s port=%d sslmode=%s",
+		cfg.Host, cfg.User, cfg.Password, cfg.DBName, cfg.Port, cfg.SSLMode,
 	)
 
-	poolConfig, err := pgxpool.ParseConfig(dsn)
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse database config: %w", err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Set connection pool settings
-	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
-	poolConfig.MinConns = int32(cfg.MaxIdleConns)
-	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = 10 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	// Configure connection pool
+	sqlDB, err := gormDB.DB()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 
 	// Test connection
-	if err := pool.Ping(ctx); err != nil {
+	if err := sqlDB.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	logger.Info("Database connection established")
 
 	return &DB{
-		pool:   pool,
+		gormDB: gormDB,
 		logger: logger,
 	}, nil
 }
 
-// Close closes the database connection
-func (db *DB) Close() {
-	db.pool.Close()
-	db.logger.Info("Database connection closed")
+// GORM returns the underlying *gorm.DB instance
+func (db *DB) GORM() *gorm.DB {
+	return db.gormDB
 }
 
-// Pool returns the underlying connection pool
-func (db *DB) Pool() *pgxpool.Pool {
-	return db.pool
+// Close closes the database connection
+func (db *DB) Close() {
+	if sqlDB, err := db.gormDB.DB(); err == nil {
+		sqlDB.Close()
+	}
+	db.logger.Info("Database connection closed")
 }
 
 // Ping checks if the database is alive
 func (db *DB) Ping(ctx context.Context) error {
-	return db.pool.Ping(ctx)
+	sqlDB, err := db.gormDB.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.PingContext(ctx)
 }
 
 // InitSchema initializes the database schema
 func (db *DB) InitSchema(ctx context.Context) error {
-	schema := `
+	result := db.gormDB.WithContext(ctx).Exec(schema)
+	if result.Error != nil {
+		return fmt.Errorf("failed to initialize schema: %w", result.Error)
+	}
+	db.logger.Info("Database schema initialized")
+	return nil
+}
+
+// IsNoRows checks if an error is a "no rows" error
+func IsNoRows(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
+}
+
+// schema is the SQL to initialize the database tables, indexes, and triggers
+const schema = `
 -- Notifications table
 CREATE TABLE IF NOT EXISTS notifications (
     id VARCHAR(64) PRIMARY KEY,
@@ -189,37 +210,3 @@ DROP TRIGGER IF EXISTS update_delivery_tasks_updated_at ON delivery_tasks;
 CREATE TRIGGER update_delivery_tasks_updated_at BEFORE UPDATE ON delivery_tasks
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 `
-
-	_, err := db.pool.Exec(ctx, schema)
-	if err != nil {
-		return fmt.Errorf("failed to initialize schema: %w", err)
-	}
-
-	db.logger.Info("Database schema initialized")
-	return nil
-}
-
-// BeginTx starts a new transaction
-func (db *DB) BeginTx(ctx context.Context) (pgx.Tx, error) {
-	return db.pool.Begin(ctx)
-}
-
-// QueryRow executes a query that returns at most one row
-func (db *DB) QueryRow(ctx context.Context, query string, args ...interface{}) pgx.Row {
-	return db.pool.QueryRow(ctx, query, args...)
-}
-
-// Query executes a query that returns rows
-func (db *DB) Query(ctx context.Context, query string, args ...interface{}) (pgx.Rows, error) {
-	return db.pool.Query(ctx, query, args...)
-}
-
-// Exec executes a query that doesn't return rows
-func (db *DB) Exec(ctx context.Context, query string, args ...interface{}) (pgx.CommandTag, error) {
-	return db.pool.Exec(ctx, query, args...)
-}
-
-// IsNoRows checks if an error is a "no rows" error
-func IsNoRows(err error) bool {
-	return err == sql.ErrNoRows || err == pgx.ErrNoRows
-}

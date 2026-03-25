@@ -21,9 +21,10 @@ type Dispatcher struct {
 	deliveryTaskStore    *storage.DeliveryTaskStore
 	deliveryAttemptStore *storage.DeliveryAttemptStore
 	notificationStore    *storage.NotificationStore
+	recipientStore       *storage.RecipientStore
 	adapters             map[string]adapter.Adapter
 	leaseOwner           string
-	stopCh               chan struct{}
+	cancel               context.CancelFunc
 	wg                   sync.WaitGroup
 	logger               *log.Entry
 }
@@ -34,6 +35,7 @@ func New(
 	deliveryTaskStore *storage.DeliveryTaskStore,
 	deliveryAttemptStore *storage.DeliveryAttemptStore,
 	notificationStore *storage.NotificationStore,
+	recipientStore *storage.RecipientStore,
 	adapters map[string]adapter.Adapter,
 	logger *log.Entry,
 ) *Dispatcher {
@@ -46,9 +48,9 @@ func New(
 		deliveryTaskStore:    deliveryTaskStore,
 		deliveryAttemptStore: deliveryAttemptStore,
 		notificationStore:    notificationStore,
+		recipientStore:       recipientStore,
 		adapters:             adapters,
 		leaseOwner:           uuid.New().String(),
-		stopCh:               make(chan struct{}),
 		logger:               logger,
 	}
 }
@@ -59,6 +61,8 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		d.logger.Info("Dispatcher is disabled")
 		return nil
 	}
+
+	ctx, d.cancel = context.WithCancel(ctx)
 
 	d.logger.WithFields(log.Fields{
 		"lease_owner": d.leaseOwner,
@@ -72,15 +76,17 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the dispatcher
+// Stop stops the dispatcher and waits for all in-flight tasks to complete
 func (d *Dispatcher) Stop() error {
-	close(d.stopCh)
+	if d.cancel != nil {
+		d.cancel()
+	}
 	d.wg.Wait()
 	d.logger.Info("Dispatcher stopped")
 	return nil
 }
 
-// dispatchLoop is the main dispatch loop
+// dispatchLoop is the main dispatch loop, driven by a ticker and context cancellation
 func (d *Dispatcher) dispatchLoop(ctx context.Context) {
 	defer d.wg.Done()
 
@@ -91,49 +97,59 @@ func (d *Dispatcher) dispatchLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.stopCh:
-			return
 		case <-ticker.C:
 			d.dispatchBatch(ctx)
 		}
 	}
 }
 
-// dispatchBatch dispatches a batch of tasks
+// dispatchBatch acquires and dispatches pending and retry tasks concurrently
 func (d *Dispatcher) dispatchBatch(ctx context.Context) {
-	// Acquire pending tasks
-	pendingTasks, err := d.deliveryTaskStore.AcquirePendingTasks(
-		ctx,
-		d.leaseOwner,
-		d.config.Dispatcher.LeaseTimeout,
-		d.config.Dispatcher.BatchSize,
-	)
-	if err != nil {
-		d.logger.WithError(err).Error("Failed to acquire pending tasks")
-	} else if len(pendingTasks) > 0 {
-		d.logger.WithField("count", len(pendingTasks)).Debug("Acquired pending tasks")
-		d.processTasks(ctx, pendingTasks)
-	}
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// Acquire retry tasks
-	retryTasks, err := d.deliveryTaskStore.AcquireRetryTasks(
-		ctx,
-		d.leaseOwner,
-		d.config.Dispatcher.LeaseTimeout,
-		d.config.Dispatcher.BatchSize,
-	)
-	if err != nil {
-		d.logger.WithError(err).Error("Failed to acquire retry tasks")
-	} else if len(retryTasks) > 0 {
-		d.logger.WithField("count", len(retryTasks)).Debug("Acquired retry tasks")
-		d.processTasks(ctx, retryTasks)
-	}
+	go func() {
+		defer wg.Done()
+		pendingTasks, err := d.deliveryTaskStore.AcquirePendingTasks(
+			ctx,
+			d.leaseOwner,
+			d.config.Dispatcher.LeaseTimeout,
+			d.config.Dispatcher.BatchSize,
+		)
+		if err != nil {
+			d.logger.WithError(err).Error("Failed to acquire pending tasks")
+			return
+		}
+		if len(pendingTasks) > 0 {
+			d.logger.WithField("count", len(pendingTasks)).Debug("Acquired pending tasks")
+			d.processTasks(ctx, pendingTasks)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		retryTasks, err := d.deliveryTaskStore.AcquireRetryTasks(
+			ctx,
+			d.leaseOwner,
+			d.config.Dispatcher.LeaseTimeout,
+			d.config.Dispatcher.BatchSize,
+		)
+		if err != nil {
+			d.logger.WithError(err).Error("Failed to acquire retry tasks")
+			return
+		}
+		if len(retryTasks) > 0 {
+			d.logger.WithField("count", len(retryTasks)).Debug("Acquired retry tasks")
+			d.processTasks(ctx, retryTasks)
+		}
+	}()
+
+	wg.Wait()
 }
 
-// processTasks processes a batch of tasks
+// processTasks spawns a goroutine for each task
 func (d *Dispatcher) processTasks(ctx context.Context, tasks []*database.DeliveryTask) {
 	for _, task := range tasks {
-		// Process each task in a goroutine
 		d.wg.Add(1)
 		go func(t *database.DeliveryTask) {
 			defer d.wg.Done()
@@ -142,7 +158,7 @@ func (d *Dispatcher) processTasks(ctx context.Context, tasks []*database.Deliver
 	}
 }
 
-// processTask processes a single delivery task
+// processTask executes a single delivery task
 func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTask) {
 	logger := d.logger.WithFields(log.Fields{
 		"task_id":         task.ID,
@@ -155,7 +171,7 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 	logger.Debug("Processing task")
 
 	// Get adapter for this channel/provider
-	adapter, ok := d.adapters[task.Provider]
+	adapterInstance, ok := d.adapters[task.Provider]
 	if !ok {
 		logger.Errorf("Adapter not found for provider: %s", task.Provider)
 		d.handleTaskFailure(ctx, task, fmt.Sprintf("adapter not found: %s", task.Provider), nil)
@@ -170,19 +186,28 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 		return
 	}
 
-	// Create send request
-	sendReq := &adapter.SendRequest{
-		Title:     notification.Title,
-		Content:   notification.Content,
-		Variables: notification.VariablesJSON,
-		Metadata:  map[string]string{},
+	// Get recipient details
+	recipient, err := d.recipientStore.GetByID(ctx, task.RecipientID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to get recipient")
+		d.handleTaskFailure(ctx, task, fmt.Sprintf("failed to get recipient: %v", err), nil)
+		return
 	}
 
-	// Record attempt start time
+	// Build send request
+	sendReq := &adapter.SendRequest{
+		RecipientType:  recipient.RecipientType,
+		RecipientValue: recipient.RecipientValue,
+		Title:          notification.Title,
+		Content:        notification.Content,
+		Variables:      notification.VariablesJSON,
+		Metadata:       map[string]string{},
+	}
+
 	startTime := time.Now()
 
 	// Send notification
-	response, err := adapter.Send(ctx, sendReq)
+	response, sendErr := adapterInstance.Send(ctx, sendReq)
 
 	// Record attempt
 	attempt := &database.DeliveryAttempt{
@@ -193,10 +218,10 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 		FinishedAt: time.Now(),
 	}
 
-	if err != nil || !response.Success {
+	if sendErr != nil || (response != nil && !response.Success) {
 		attempt.Result = "failed"
-		if err != nil {
-			attempt.ErrorMessage = err.Error()
+		if sendErr != nil {
+			attempt.ErrorMessage = sendErr.Error()
 		} else if response.Error != nil {
 			attempt.ErrorMessage = response.Error.Error()
 		}
@@ -207,45 +232,41 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 	}
 
 	// Handle result
-	if err != nil || !response.Success {
+	if sendErr != nil || (response != nil && !response.Success) {
 		errorMsg := "unknown error"
-		if err != nil {
-			errorMsg = err.Error()
-		} else if response.Error != nil {
+		if sendErr != nil {
+			errorMsg = sendErr.Error()
+		} else if response != nil && response.Error != nil {
 			errorMsg = response.Error.Error()
 		}
-
 		d.handleTaskFailure(ctx, task, errorMsg, nil)
-		logger.WithError(err).Error("Task failed")
+		logger.WithError(sendErr).Error("Task failed")
 	} else {
 		d.handleTaskSuccess(ctx, task)
 		logger.Info("Task completed successfully")
 	}
 }
 
-// handleTaskSuccess handles successful task completion
+// handleTaskSuccess marks the task as successfully completed
 func (d *Dispatcher) handleTaskSuccess(ctx context.Context, task *database.DeliveryTask) {
 	if err := d.deliveryTaskStore.UpdateSuccess(ctx, task.ID); err != nil {
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task success")
 	}
 }
 
-// handleTaskFailure handles task failure and retry logic
-func (d *Dispatcher) handleTaskFailure(ctx context.Context, task *database.DeliveryTask, errorMsg string, retryAfter *time.Duration) {
-	// Determine if we should retry
-	var calculatedRetryAfter *time.Duration
+// handleTaskFailure handles task failure and retry scheduling
+func (d *Dispatcher) handleTaskFailure(ctx context.Context, task *database.DeliveryTask, errorMsg string, _ *time.Duration) {
+	var retryAfter *time.Duration
 	if task.RetryCount < task.MaxRetry {
-		// Calculate backoff duration
 		backoffIndex := task.RetryCount
 		if backoffIndex >= len(d.config.Defaults.RetryBackoffSeconds) {
 			backoffIndex = len(d.config.Defaults.RetryBackoffSeconds) - 1
 		}
-
 		duration := time.Duration(d.config.Defaults.RetryBackoffSeconds[backoffIndex]) * time.Second
-		calculatedRetryAfter = &duration
+		retryAfter = &duration
 	}
 
-	if err := d.deliveryTaskStore.UpdateFailure(ctx, task.ID, errorMsg, calculatedRetryAfter); err != nil {
+	if err := d.deliveryTaskStore.UpdateFailure(ctx, task.ID, errorMsg, retryAfter); err != nil {
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task failure")
 	}
 }

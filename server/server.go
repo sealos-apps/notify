@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/labring/sealos-notify/pkg/adapter"
+	feishuapp "github.com/labring/sealos-notify/pkg/adapter/feishu_app"
 	"github.com/labring/sealos-notify/pkg/config"
 	"github.com/labring/sealos-notify/pkg/database"
 	"github.com/labring/sealos-notify/pkg/dispatcher"
@@ -76,11 +77,12 @@ func (s *Server) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	// Initialize stores
-	s.notificationStore = storage.NewNotificationStore(s.db, s.logger.WithField("subcomponent", "notification_store"))
-	s.recipientStore = storage.NewRecipientStore(s.db, s.logger.WithField("subcomponent", "recipient_store"))
-	s.deliveryTaskStore = storage.NewDeliveryTaskStore(s.db, s.logger.WithField("subcomponent", "delivery_task_store"))
-	s.deliveryAttemptStore = storage.NewDeliveryAttemptStore(s.db, s.logger.WithField("subcomponent", "delivery_attempt_store"))
+	// Initialize stores using the GORM instance
+	gormDB := s.db.GORM()
+	s.notificationStore = storage.NewNotificationStore(gormDB, s.logger.WithField("subcomponent", "notification_store"))
+	s.recipientStore = storage.NewRecipientStore(gormDB, s.logger.WithField("subcomponent", "recipient_store"))
+	s.deliveryTaskStore = storage.NewDeliveryTaskStore(gormDB, s.logger.WithField("subcomponent", "delivery_task_store"))
+	s.deliveryAttemptStore = storage.NewDeliveryAttemptStore(gormDB, s.logger.WithField("subcomponent", "delivery_attempt_store"))
 
 	// Initialize adapters
 	if err := s.initAdapters(); err != nil {
@@ -102,6 +104,7 @@ func (s *Server) Init(ctx context.Context) error {
 		s.deliveryTaskStore,
 		s.deliveryAttemptStore,
 		s.notificationStore,
+		s.recipientStore,
 		s.adapters,
 		s.logger.WithField("subcomponent", "dispatcher"),
 	)
@@ -118,15 +121,28 @@ func (s *Server) Init(ctx context.Context) error {
 	return nil
 }
 
-// initAdapters initializes channel adapters
+// initAdapters initializes channel adapters from the configured providers
 func (s *Server) initAdapters() error {
-	// TODO: Initialize actual adapters based on configuration
-	// For now, we just log the configured providers
+	s.adapters = make(map[string]adapter.Adapter)
+
 	for providerName, providerConfig := range s.config.Providers {
-		s.logger.WithFields(log.Fields{
+		logger := s.logger.WithFields(log.Fields{
 			"provider": providerName,
 			"type":     providerConfig.Type,
-		}).Debug("Provider configured")
+		})
+
+		switch providerConfig.Type {
+		case "feishu_app":
+			a, err := feishuapp.New(providerConfig.Data)
+			if err != nil {
+				return fmt.Errorf("failed to initialize feishu_app adapter %q: %w", providerName, err)
+			}
+			s.adapters[providerName] = a
+			logger.Info("Feishu app adapter initialized")
+
+		default:
+			logger.Debug("Provider configured (adapter not yet implemented)")
+		}
 	}
 
 	return nil
@@ -139,7 +155,6 @@ func (s *Server) setupHTTPServer() {
 	router.Use(gin.Recovery())
 	router.Use(s.loggingMiddleware())
 
-	// Setup routes
 	s.setupRoutes(router)
 
 	s.httpServer = &http.Server{
@@ -187,21 +202,18 @@ func (s *Server) Serve() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("Shutting down server")
 
-	// Stop dispatcher
 	if s.dispatcher != nil {
 		if err := s.dispatcher.Stop(); err != nil {
 			s.logger.WithError(err).Error("Failed to stop dispatcher")
 		}
 	}
 
-	// Stop HTTP server
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			s.logger.WithError(err).Error("Failed to stop HTTP server")
 		}
 	}
 
-	// Close database
 	if s.db != nil {
 		s.db.Close()
 	}
@@ -217,11 +229,9 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 
 	s.logger.Info("Reloading server configuration")
 
-	// Apply hot-reloadable configuration
 	s.config.ApplyHotReload(newConfig)
 	s.configContent = newConfigContent
 
-	// Reinitialize adapters if needed
 	if err := s.initAdapters(); err != nil {
 		s.logger.WithError(err).Error("Failed to reinitialize adapters")
 		return err

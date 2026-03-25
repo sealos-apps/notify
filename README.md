@@ -1,295 +1,311 @@
-# Sealos Notify
+# sealos-notify
 
-Sealos Notify 是一个统一的通知服务系统，为 Sealos 平台提供多渠道通知能力。
+sealos-notify 是 Sealos 平台的统一通知服务，支持多渠道通知投递，具备可靠重试、幂等保证和高可用能力。
 
 ## 功能特性
 
-- **多渠道支持**：支持站内信、邮件、短信、语音、飞书等多种通知渠道
-- **统一管理**：统一的通知发送入口和状态管理
-- **可靠投递**：支持失败重试、任务抢占、幂等保证
-- **灵活配置**：支持配置热加载，无需重启服务
-- **高可用**：支持多副本部署，通过数据库任务抢占实现负载均衡
-- **可观测性**：完整的投递记录和审计日志
+- **多渠道支持** — 站内信（CRD）、邮件、短信、语音、飞书 Webhook、飞书应用
+- **飞书加急通知** — 发送消息后自动触发应用内/短信/电话加急提醒
+- **可靠投递** — 数据库任务队列 + 指数退避重试，支持最大重试次数配置
+- **幂等 API** — 相同 idempotencyKey 的重复请求安全幂等
+- **高可用** — 多副本共享任务队列，通过数据库级 `FOR UPDATE SKIP LOCKED` 实现无冲突任务分配
+- **配置热加载** — 修改渠道、Provider 和模板配置无需重启服务
+- **优雅退出** — 停机时等待所有进行中的投递任务完成
 
-## 架构设计
-
-### 核心组件
+## 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      API Layer                          │
-│  (接收通知请求、提供查询接口、配置管理)                   │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                 Notification Engine                      │
-│  (请求校验、渠道解析、模板处理、任务生成)                 │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                    Database                              │
-│  (通知记录、投递任务、审计日志)                          │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                   Dispatcher                             │
-│  (任务抢占、调度执行、失败重试)                          │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│               Channel Adapters                           │
-│  (inapp, email, sms, voice, feishu)                    │
-└─────────────────────────────────────────────────────────┘
+HTTP API → Engine → delivery_tasks 表 → Dispatcher → Channel Adapters
+                                              ↕
+                                      delivery_attempts 表
 ```
 
-### 工作流程
-
-1. 调用方通过 API 发送通知请求
-2. Engine 校验请求并生成通知记录
-3. Engine 为每个接收人和渠道生成投递任务
-4. Dispatcher 定期从数据库抢占待执行任务
-5. Dispatcher 调用对应的 Channel Adapter 执行发送
-6. 更新任务状态，失败时按退避策略重试
+1. `POST /api/v1/notifications` 创建通知记录、接收人和投递任务（每个接收人×渠道生成一条任务）。
+2. **Dispatcher** 按配置间隔轮询任务队列，通过 `FOR UPDATE SKIP LOCKED` 并发获取待执行和待重试任务（两类任务并行拉取）。
+3. 每条任务在独立 goroutine 中调用对应 **Adapter**，结果写入 `delivery_attempts`；失败按退避调度重试，超过 `maxRetry` 后标记为 `dead`。
 
 ## 快速开始
 
-### 前置要求
+### 前置依赖
 
-- Go 1.25+
-- PostgreSQL 12+
-- Kubernetes 1.20+ (生产部署)
+- Go 1.21+
+- PostgreSQL 14+
 
-### 本地开发
-
-1. 克隆代码：
+### 1. 克隆并准备配置
 
 ```bash
 git clone https://github.com/labring/sealos-notify.git
 cd sealos-notify
+cp config.example.yaml config.yaml
+# 按需修改 config.yaml 中的数据库配置和渠道配置
 ```
 
-2. 安装依赖：
+### 2. 启动 PostgreSQL（开发用）
 
 ```bash
-go mod download
-```
-
-3. 准备配置文件：
-
-```bash
-cp config.example.yaml config.local.yaml
-# 修改 config.local.yaml 中的数据库配置
-```
-
-4. 启动 PostgreSQL（使用 Docker）：
-
-```bash
-docker run -d \
-  --name postgres \
+docker run -d --name postgres \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=sealos_notify \
-  -p 5432:5432 \
-  postgres:16-alpine
+  -p 5432:5432 postgres:16-alpine
 ```
 
-5. 运行服务：
+### 3. 运行服务
 
 ```bash
-make run
-# 或者
-go run main.go --config config.local.yaml
+go run . -c config.yaml
 ```
 
-### 构建
+或使用 Docker：
 
 ```bash
-# 构建二进制
-make build
-
-# 构建 Docker 镜像
-make docker-build
+docker build -t sealos-notify .
+docker run -p 8080:8080 -v $(pwd)/config.yaml:/config.yaml sealos-notify -c /config.yaml
 ```
 
-## API 使用
-
-### 发送通知
+### 4. 发送通知
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/notifications \
   -H "Content-Type: application/json" \
   -d '{
-    "idempotencyKey": "order-123-notify-1",
-    "title": "订单通知",
-    "content": "您的订单已创建成功",
-    "channels": ["email", "sms"],
-    "recipients": [
-      {
-        "type": "email",
-        "value": "user@example.com"
-      },
-      {
-        "type": "phone",
-        "value": "+8613800000000"
-      }
-    ],
-    "variables": {
-      "orderId": "123",
-      "amount": "99.00"
-    }
+    "idempotencyKey": "test-001",
+    "title": "系统告警",
+    "content": "CPU 使用率超过 90%",
+    "channels": ["feishu_app"],
+    "recipients": [{"type": "feishu_user_id", "value": "ou_xxxxxxxx"}]
   }'
 ```
 
-### 查询通知状态
+## API 接口
 
-```bash
-curl http://localhost:8080/api/v1/notifications/{notificationId}
+### `POST /api/v1/notifications` — 发送通知
+
+**请求体：**
+
+```json
+{
+  "idempotencyKey": "唯一标识，相同 key 的请求只执行一次",
+  "title": "通知标题",
+  "content": "通知内容",
+  "channels": ["feishu_app", "email"],
+  "recipients": [
+    {"type": "feishu_user_id", "value": "ou_xxxxxxxx"},
+    {"type": "email", "value": "user@example.com"}
+  ],
+  "template": "可选模板名",
+  "variables": {"key": "value"}
+}
 ```
 
-### 查询投递记录
+接收人 `type` 与渠道的对应关系：
 
-```bash
-curl http://localhost:8080/api/v1/notifications/{notificationId}/deliveries
+| 渠道            | 接收人 type         |
+|-----------------|---------------------|
+| `email`         | `email`             |
+| `sms`, `voice`  | `phone`             |
+| `inapp`         | `user_id`           |
+| `feishu_app`, `feishu_webhook` | `feishu_user_id` 或 `email` |
+
+**响应：**
+
+```json
+{"notificationId": "uuid", "status": "accepted"}
 ```
 
-### 健康检查
+### `GET /api/v1/notifications/:id` — 查询通知状态
 
-```bash
-curl http://localhost:8080/health
-```
+返回通知详情及所有投递任务。
+
+### `GET /api/v1/notifications/:id/deliveries` — 查询投递任务
+
+返回该通知的所有投递任务列表。
+
+### `GET /health` — 健康检查
+
+数据库可达时返回 `200 {"status":"ok"}`。
 
 ## 配置说明
 
-### 服务器配置
+完整示例见 `config.example.yaml`。
 
-```yaml
-server:
-  address: ":8080"          # 监听地址
-  readTimeout: 30s          # 读超时
-  writeTimeout: 30s         # 写超时
-  idleTimeout: 60s          # 空闲超时
-```
+### `server`
 
-### 数据库配置
+| 字段           | 默认值  | 说明             |
+|----------------|---------|------------------|
+| `address`      | `:8080` | HTTP 监听地址    |
+| `readTimeout`  | `30s`   | 读超时           |
+| `writeTimeout` | `30s`   | 写超时           |
+| `idleTimeout`  | `60s`   | 空闲超时         |
 
-```yaml
-database:
-  host: localhost           # 数据库主机
-  port: 5432                # 数据库端口
-  user: postgres            # 数据库用户
-  password: postgres        # 数据库密码
-  dbname: sealos_notify     # 数据库名
-  sslMode: disable          # SSL 模式
-  maxOpenConns: 25          # 最大连接数
-  maxIdleConns: 5           # 最大空闲连接数
-  connMaxLifetime: 5m       # 连接最大生命周期
-```
+### `database`
 
-### 调度器配置
+| 字段              | 默认值          | 说明                 |
+|-------------------|-----------------|----------------------|
+| `host`            | `localhost`     | PostgreSQL 主机      |
+| `port`            | `5432`          | PostgreSQL 端口      |
+| `user`            | `postgres`      | 数据库用户           |
+| `password`        |                 | 数据库密码           |
+| `dbname`          | `sealos_notify` | 数据库名             |
+| `sslMode`         | `disable`       | SSL 模式             |
+| `maxOpenConns`    | `25`            | 最大连接数           |
+| `maxIdleConns`    | `5`             | 最大空闲连接数       |
+| `connMaxLifetime` | `5m`            | 连接最大生命周期     |
 
-```yaml
-dispatcher:
-  enabled: true             # 是否启用调度器
-  interval: 10s             # 轮询间隔
-  batchSize: 100            # 每批次任务数
-  leaseTimeout: 5m          # 任务租约超时
-```
+### `dispatcher`
 
-### 渠道配置
+| 字段           | 默认值  | 说明                                            |
+|----------------|---------|-------------------------------------------------|
+| `enabled`      | `true`  | 是否启用调度器                                  |
+| `interval`     | `10s`   | 轮询间隔                                        |
+| `batchSize`    | `100`   | 每轮次每类任务（pending/retry）的最大拉取数量   |
+| `leaseTimeout` | `5m`    | 任务租约超时（超时后任务可被其他副本重新获取）  |
+
+### `defaults`
+
+| 字段                  | 默认值           | 说明                         |
+|-----------------------|------------------|------------------------------|
+| `maxRetry`            | `3`              | 最大重试次数（超过则标记 dead）|
+| `retryBackoffSeconds` | `[30, 120, 300]` | 各次重试的等待秒数           |
+
+## 飞书加急通知
+
+飞书加急（紧急通知）是飞书应用消息的一个特殊功能，可以在普通消息基础上触发额外提醒方式：应用内弹窗加急、短信通知、电话通知。
+
+### 配置步骤
+
+1. 在[飞书开放平台](https://open.feishu.cn/app)创建企业自建应用。
+2. 开通权限（"权限管理" 页面）：
+   - `im:message:send_as_bot` — 以机器人身份发消息
+   - `im:message.group_urgent_app:create` — 应用内加急（`urgentType: app`）
+   - `im:message.group_urgent_sms:create` — 短信加急（`urgentType: sms`）
+   - `im:message.group_urgent_phone:create` — 电话加急（`urgentType: phone`）
+3. 在应用"凭证与基础信息"页获取 App ID 和 App Secret。
+4. 将机器人添加到目标群组，或确保有权限给用户发送单聊消息。
+
+### Provider 配置
 
 ```yaml
 channels:
-  email:
-    enabled: true           # 是否启用
-    provider: smtp-default  # 使用的 provider
+  feishu_app:
+    enabled: true
+    provider: feishu-app-urgent   # 引用下方 provider 名称
 
 providers:
-  smtp-default:
-    type: smtp
-    host: smtp.example.com
-    port: 465
-    username: notify@example.com
-    passwordFromSecret:     # 从 Secret 读取密码
-      name: notify-smtp-secret
-      key: password
+  feishu-app-urgent:
+    type: feishu_app
+    appId: "cli_xxxxxxxxxxxxxxxx"   # 飞书 App ID
+    appSecret: "xxxxxxxxxxxxxxxx"   # 飞书 App Secret
+    receiveIdType: "open_id"        # open_id | user_id | union_id | email
+    msgType: "text"                 # text | post | interactive
+    urgentType: "app"               # app（应用内加急）| sms（短信加急）| phone（电话加急）| ""（不加急）
 ```
 
-## 数据库表结构
-
-- **notifications**: 通知主表
-- **notification_recipients**: 接收人表
-- **delivery_tasks**: 投递任务表
-- **delivery_attempts**: 投递尝试记录表
-- **config_change_audits**: 配置变更审计表
-
-详细 schema 见 `pkg/database/postgres.go`。
-
-## 部署
-
-### Kubernetes 部署
-
-1. 创建命名空间和 Secret：
+### 发送飞书加急通知示例
 
 ```bash
-kubectl create namespace sealos
-kubectl create secret generic postgres-secret \
-  --from-literal=password=your-password \
-  -n sealos
+curl -X POST http://localhost:8080/api/v1/notifications \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotencyKey": "incident-2024-001",
+    "title": "P0 故障告警",
+    "content": "数据库主节点不可用，请立即处理！",
+    "channels": ["feishu_app"],
+    "recipients": [
+      {"type": "feishu_user_id", "value": "ou_xxxxxxxx"}
+    ]
+  }'
 ```
 
-2. 应用配置：
+Adapter 执行逻辑：
+1. 调用飞书 `im.v1.message.create` API 发送消息。
+2. 获取返回的 `message_id`，调用对应的加急 API（`urgent_app` / `urgent_sms` / `urgent_phone`）。
+3. 加急调用失败不会影响主消息的投递结果（非致命错误）。
 
-```bash
-kubectl apply -f deploy/kubernetes/
-```
+### receiveIdType 与接收人 type 对应关系
 
-### 配置热加载
+| `receiveIdType` | 请求中接收人 `type` |
+|-----------------|---------------------|
+| `open_id`       | `feishu_user_id`    |
+| `user_id`       | `feishu_user_id`    |
+| `union_id`      | `feishu_user_id`    |
+| `email`         | `email`             |
 
-服务支持配置热加载。修改 ConfigMap 后，服务会自动检测变更并重新加载配置，无需重启。
-
-```bash
-kubectl edit configmap sealos-notify-config -n sealos
-```
-
-## 开发指南
-
-### 项目结构
+## 项目结构
 
 ```
 sealos-notify/
-├── main.go                      # 主入口
+├── main.go                         # 程序入口
+├── config.example.yaml             # 配置示例
 ├── pkg/
-│   ├── config/                  # 配置管理
-│   ├── logger/                  # 日志管理
-│   ├── database/                # 数据库层
-│   ├── storage/                 # 存储层
-│   ├── engine/                  # 通知引擎
-│   ├── dispatcher/              # 任务调度器
-│   └── adapter/                 # 渠道适配器
-├── server/                      # HTTP 服务器
-└── deploy/                      # 部署文件
+│   ├── config/                     # 配置加载与热重载
+│   ├── logger/                     # 日志初始化
+│   ├── database/                   # 数据库连接（GORM）与 Schema 初始化
+│   ├── storage/                    # 数据访问层（GORM ORM）
+│   │   ├── notification.go         # 通知与接收人存储
+│   │   └── delivery.go             # 投递任务与投递记录存储
+│   ├── engine/                     # 通知引擎（请求校验、任务生成）
+│   ├── dispatcher/                 # 任务调度器（轮询、并发分发、重试）
+│   └── adapter/
+│       ├── adapter.go              # Adapter 接口定义
+│       └── feishu_app/             # 飞书应用加急通知 Adapter
+├── server/                         # HTTP 服务器与路由
+└── deploy/kubernetes/              # K8s 部署 manifests
 ```
 
-### 添加新渠道
+## 添加新渠道
 
-1. 在 `pkg/adapter/` 下创建新渠道目录
-2. 实现 `adapter.Adapter` 接口
-3. 在配置中添加对应的 provider 和 channel 配置
-4. 在 `server/server.go` 的 `initAdapters` 方法中初始化适配器
+1. 在 `pkg/adapter/<channel_name>/` 下创建目录，实现 `adapter.Adapter` 接口：
+   ```go
+   type Adapter interface {
+       Send(ctx context.Context, request *SendRequest) (*SendResponse, error)
+       Name() string
+       ChannelType() ChannelType
+       Validate() error
+   }
+   ```
+2. 在 `server/server.go` 的 `initAdapters()` 中注册该类型：
+   ```go
+   case "my_channel":
+       a, err := mychannel.New(providerConfig.Data)
+       s.adapters[providerName] = a
+   ```
+3. 在 `config.example.yaml` 中添加对应的 channel 和 provider 示例配置。
 
-### 测试
+## Kubernetes 部署
 
 ```bash
-# 运行测试
-make test
+# 创建命名空间和数据库 Secret
+kubectl create namespace sealos
+kubectl create secret generic postgres-secret \
+  --from-literal=password=your-db-password -n sealos
 
-# 运行 lint
-make lint
+# 部署
+kubectl apply -f deploy/kubernetes/
 ```
 
-## 贡献
+多副本场景下直接调整 Deployment 的 `replicas`，无需额外配置，各副本通过数据库任务队列自动分工。
 
-欢迎提交 Issue 和 Pull Request！
+## 环境变量覆盖
+
+所有配置字段均可通过环境变量覆盖，前缀对应配置节：
+
+| 环境变量前缀    | 对应配置节     |
+|----------------|---------------|
+| `SERVER_`      | `server`      |
+| `DATABASE_`    | `database`    |
+| `LOGGING_`     | `logging`     |
+| `DISPATCHER_`  | `dispatcher`  |
+
+示例：`DATABASE_HOST=db.prod DATABASE_PASSWORD=secret ./sealos-notify -c config.yaml`
+
+## 构建
+
+```bash
+make build         # 构建二进制
+make docker-build  # 构建 Docker 镜像
+make run           # 本地运行（需要 PostgreSQL）
+```
 
 ## 许可证
 
-MIT License
+Apache 2.0

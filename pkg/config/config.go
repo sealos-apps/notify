@@ -138,10 +138,8 @@ func LoadGlobalConfig(opts LoadOptions) (*GlobalConfig, error) {
 		return nil, fmt.Errorf("failed to create CLI parser: %w", err)
 	}
 
-	// Parse arguments
-	if opts.DisableExit {
-		parser = parser.Exit(func(int) {})
-	}
+	// Parse arguments (DisableExit is handled via kong option at construction time)
+	_ = opts.DisableExit
 
 	if _, err := parser.Parse(opts.Args); err != nil {
 		return nil, fmt.Errorf("failed to parse CLI arguments: %w", err)

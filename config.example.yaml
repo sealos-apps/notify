@@ -55,9 +55,10 @@ channels:
   feishu_webhook:
     enabled: true
     provider: feishu-webhook-default
+  # Feishu App urgent notification channel
   feishu_app:
     enabled: true
-    provider: feishu-app-default
+    provider: feishu-app-urgent
 
 # Channel providers
 providers:
@@ -104,14 +105,30 @@ providers:
       name: notify-feishu-webhook-secret
       key: url
 
-  feishu-app-default:
+  # Feishu App urgent notification provider
+  # Obtain appId and appSecret from the Feishu/Lark Developer Console:
+  # https://open.feishu.cn/app
+  feishu-app-urgent:
     type: feishu_app
-    appIdFromSecret:
-      name: notify-feishu-app-secret
-      key: appId
-    appSecretFromSecret:
-      name: notify-feishu-app-secret
-      key: appSecret
+    # Application credentials
+    appId: "YOUR_APP_ID"
+    appSecret: "YOUR_APP_SECRET"
+    # How recipients are identified:
+    #   open_id  - Feishu Open ID (recommended)
+    #   user_id  - Feishu User ID
+    #   union_id - Feishu Union ID
+    #   email    - User email address
+    receiveIdType: "open_id"
+    # Message format:
+    #   text        - Plain text (default)
+    #   post        - Rich text
+    #   interactive - Card message
+    msgType: "text"
+    # Urgent notification mode (leave empty to disable):
+    #   app   - In-app urgent alert (应用内加急)
+    #   sms   - SMS urgent alert    (短信加急)
+    #   phone - Phone call alert    (电话加急)
+    urgentType: "app"
 
 # Notification templates
 templates:
@@ -125,6 +142,9 @@ templates:
   default-voice:
     channel: voice
     templateCode: VMS_001
-  default-feishu:
+  default-feishu-webhook:
     channel: feishu_webhook
+    msgType: text
+  default-feishu-app:
+    channel: feishu_app
     msgType: text
