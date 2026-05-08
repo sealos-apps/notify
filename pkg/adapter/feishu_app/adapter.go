@@ -88,7 +88,7 @@ func (a *Adapter) Send(ctx context.Context, req *adapter.SendRequest) (*adapter.
 			Build()).
 		Build()
 
-	resp, err := a.client.Im.V1.Message.Create(ctx, msgReq)
+	resp, err := a.client.Im.Message.Create(ctx, msgReq)
 	if err != nil {
 		return &adapter.SendResponse{Success: false, Error: err}, nil
 	}
@@ -128,7 +128,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 			UserIdType(a.config.ReceiveIDType).
 			UrgentReceivers(receivers).
 			Build()
-		resp, err := a.client.Im.V1.Message.UrgentApp(ctx, req)
+		resp, err := a.client.Im.Message.UrgentApp(ctx, req)
 		if err != nil {
 			return fmt.Errorf("urgent app request failed: %w", err)
 		}
@@ -142,7 +142,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 			UserIdType(a.config.ReceiveIDType).
 			UrgentReceivers(receivers).
 			Build()
-		resp, err := a.client.Im.V1.Message.UrgentSms(ctx, req)
+		resp, err := a.client.Im.Message.UrgentSms(ctx, req)
 		if err != nil {
 			return fmt.Errorf("urgent sms request failed: %w", err)
 		}
@@ -156,7 +156,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 			UserIdType(a.config.ReceiveIDType).
 			UrgentReceivers(receivers).
 			Build()
-		resp, err := a.client.Im.V1.Message.UrgentPhone(ctx, req)
+		resp, err := a.client.Im.Message.UrgentPhone(ctx, req)
 		if err != nil {
 			return fmt.Errorf("urgent phone request failed: %w", err)
 		}

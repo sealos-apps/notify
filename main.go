@@ -22,6 +22,10 @@ var (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	// Store CLI args for config reload (skip program name)
 	cliArgs := os.Args[1:]
 
@@ -30,12 +34,14 @@ func main() {
 		Args: cliArgs,
 	})
 	if err != nil {
-		log.WithError(err).Fatal("Failed to load configuration")
+		log.WithError(err).Error("Failed to load configuration")
+		return 1
 	}
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		log.WithError(err).Fatal("Configuration validation failed")
+		log.WithError(err).Error("Configuration validation failed")
+		return 1
 	}
 
 	// Initialize logger
@@ -60,7 +66,8 @@ func main() {
 	if cfg.ConfigPath != "" {
 		configContent, err = os.ReadFile(cfg.ConfigPath)
 		if err != nil {
-			log.WithError(err).Fatal("Failed to read config file")
+			log.WithError(err).Error("Failed to read config file")
+			return 1
 		}
 	}
 
@@ -74,7 +81,8 @@ func main() {
 			return handleReload(cliArgs, newConfigContent, appLogger, srv)
 		})
 		if err != nil {
-			log.WithError(err).Fatal("Failed to create config reloader")
+			log.WithError(err).Error("Failed to create config reloader")
+			return 1
 		}
 	}
 
@@ -84,13 +92,15 @@ func main() {
 
 	// Initialize server first (this may take several seconds)
 	if err := srv.Init(ctx); err != nil {
-		log.WithError(err).Fatal("Failed to initialize server")
+		log.WithError(err).Error("Failed to initialize server")
+		return 1
 	}
 
 	// Start config reloader AFTER server is fully initialized
 	if reloader != nil {
 		if err := reloader.Start(ctx); err != nil {
-			log.WithError(err).Fatal("Failed to start config reloader")
+			log.WithError(err).Error("Failed to start config reloader")
+			return 1
 		}
 		defer func() {
 			if err := reloader.Stop(); err != nil {
@@ -115,15 +125,17 @@ func main() {
 
 	// Create shutdown context with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	// Shutdown server
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		appLog.WithError(err).Error("Failed to shutdown server gracefully")
-		os.Exit(1)
+		cancel()
+		return 1
 	}
+	cancel()
 
 	appLog.Info("Server exited successfully")
+	return 0
 }
 
 // handleReload handles configuration reload
