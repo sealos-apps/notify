@@ -9,7 +9,7 @@ require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/larksuite/oapi-sdk-go/v3 v3.5.3
+	github.com/larksuite/oapi-sdk-go/v3 v3.7.5
 	github.com/sirupsen/logrus v1.9.4
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.0
