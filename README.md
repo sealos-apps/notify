@@ -293,6 +293,7 @@ providers:
     appId: "cli_xxxxxxxxxxxxxxxx"
     appSecret: "xxxxxxxxxxxxxxxx"
     receiveIdType: "open_id"   # open_id | user_id | union_id | email
+    urgentUserIdType: "open_id" # open_id | user_id | union_id；默认跟随 receiveIdType（email/chat_id 除外）
     msgType: "text"            # text | post | interactive
     urgentType: "app"          # app | sms | phone | ""（空为不加急）
 ```
@@ -359,13 +360,42 @@ sealos-notify/
 ## Kubernetes 部署
 
 ```bash
-# 创建命名空间和数据库 Secret
-kubectl create namespace sealos
-kubectl create secret generic postgres-secret \
-  --from-literal=password=your-db-password -n sealos
+# 构建并推送镜像到 DockerHub
+make docker-build IMAGE=docker.io/<dockerhub-user>/sealos-notify VERSION=test
+make docker-push IMAGE=docker.io/<dockerhub-user>/sealos-notify VERSION=test
+
+# 按镜像名更新 deploy/kubernetes/deployment.yaml 后创建飞书凭证 Secret
+kubectl create namespace ns-admin --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic sealos-notify-feishu \
+  --from-literal=app-id=cli_xxxxxxxxxxxxxxxx \
+  --from-literal=app-secret=xxxxxxxxxxxxxxxx \
+  -n ns-admin
 
 # 部署
 kubectl apply -f deploy/kubernetes/
+```
+
+默认测试环境清单使用：
+
+| 项目 | 值 |
+|------|----|
+| namespace | `ns-admin` |
+| PostgreSQL host | `sealos-notify-pg-postgresql-0.sealos-notify-pg-postgresql-hl.ns-admin.svc.cluster.local` |
+| PostgreSQL Secret | `sealos-notify-pg-postgresql` / `postgres-password` |
+| 服务地址 | `http://sealos-notify.ns-admin.svc.cluster.local:8080` |
+
+验收发送链路：
+
+```bash
+kubectl -n ns-admin port-forward svc/sealos-notify 8080:8080
+
+curl -X POST http://localhost:8080/api/v1/templates \
+  -H "Content-Type: application/json" \
+  -d '{"name":"feishu-urgent-test","channel":"feishu_app","body":"【测试加急】{{ .message }}","msgType":"text"}'
+
+curl -X POST http://localhost:8080/api/v1/notifications \
+  -H "Content-Type: application/json" \
+  -d '{"idempotencyKey":"feishu-urgent-test-001","channels":{"feishu_app":{"template":"feishu-urgent-test","params":{"message":"sealos-notify 测试环境联调"}}},"recipients":[{"type":"feishu_user_id","value":"ou_xxxxxxxxxxxxxxxx"}]}'
 ```
 
 多副本场景下直接调整 Deployment 的 `replicas`，各副本通过数据库任务队列自动分工，无需额外配置。

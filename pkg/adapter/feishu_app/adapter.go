@@ -20,6 +20,8 @@ type Config struct {
 	AppSecret string
 	// ReceiveIDType specifies how recipients are identified: open_id, user_id, union_id, email, chat_id
 	ReceiveIDType string
+	// UrgentUserIDType specifies how urgent receivers are identified: open_id, user_id, union_id
+	UrgentUserIDType string
 	// MsgType is the message type: text, post, interactive
 	MsgType string
 	// UrgentType sets the urgent notification mode: app, sms, phone (empty = no urgent)
@@ -33,14 +35,15 @@ type Adapter struct {
 }
 
 // New creates a new Feishu App adapter from a provider data map.
-// Expected keys: appId, appSecret, receiveIdType, msgType, urgentType
+// Expected keys: appId, appSecret, receiveIdType, urgentUserIdType, msgType, urgentType
 func New(data map[string]interface{}) (*Adapter, error) {
 	cfg := Config{
-		AppID:         getString(data, "appId"),
-		AppSecret:     getString(data, "appSecret"),
-		ReceiveIDType: getString(data, "receiveIdType"),
-		MsgType:       getString(data, "msgType"),
-		UrgentType:    getString(data, "urgentType"),
+		AppID:            getString(data, "appId"),
+		AppSecret:        getString(data, "appSecret"),
+		ReceiveIDType:    getString(data, "receiveIdType"),
+		UrgentUserIDType: getString(data, "urgentUserIdType"),
+		MsgType:          getString(data, "msgType"),
+		UrgentType:       getString(data, "urgentType"),
 	}
 
 	if cfg.AppID == "" {
@@ -51,6 +54,9 @@ func New(data map[string]interface{}) (*Adapter, error) {
 	}
 	if cfg.ReceiveIDType == "" {
 		cfg.ReceiveIDType = "open_id"
+	}
+	if cfg.UrgentUserIDType == "" && cfg.ReceiveIDType != "email" && cfg.ReceiveIDType != "chat_id" {
+		cfg.UrgentUserIDType = cfg.ReceiveIDType
 	}
 	if cfg.MsgType == "" {
 		cfg.MsgType = "text"
@@ -108,6 +114,8 @@ func (a *Adapter) Send(ctx context.Context, req *adapter.SendRequest) (*adapter.
 			if urgentErr := a.sendUrgent(ctx, *resp.Data.MessageId, req.RecipientValue); urgentErr != nil {
 				// Urgent notification failure is non-fatal — the message was already delivered
 				details["urgent_error"] = urgentErr.Error()
+			} else {
+				details["urgent_type"] = a.config.UrgentType
 			}
 		}
 	}
@@ -117,6 +125,10 @@ func (a *Adapter) Send(ctx context.Context, req *adapter.SendRequest) (*adapter.
 
 // sendUrgent sends an urgent follow-up for an existing message
 func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID string) error {
+	if a.config.UrgentUserIDType == "" {
+		return fmt.Errorf("urgentUserIdType is required when urgentType is enabled")
+	}
+
 	receivers := larkim.NewUrgentReceiversBuilder().
 		UserIdList([]string{userID}).
 		Build()
@@ -125,7 +137,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 	case "app":
 		req := larkim.NewUrgentAppMessageReqBuilder().
 			MessageId(messageID).
-			UserIdType(a.config.ReceiveIDType).
+			UserIdType(a.config.UrgentUserIDType).
 			UrgentReceivers(receivers).
 			Build()
 		resp, err := a.client.Im.Message.UrgentApp(ctx, req)
@@ -139,7 +151,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 	case "sms":
 		req := larkim.NewUrgentSmsMessageReqBuilder().
 			MessageId(messageID).
-			UserIdType(a.config.ReceiveIDType).
+			UserIdType(a.config.UrgentUserIDType).
 			UrgentReceivers(receivers).
 			Build()
 		resp, err := a.client.Im.Message.UrgentSms(ctx, req)
@@ -153,7 +165,7 @@ func (a *Adapter) sendUrgent(ctx context.Context, messageID string, userID strin
 	case "phone":
 		req := larkim.NewUrgentPhoneMessageReqBuilder().
 			MessageId(messageID).
-			UserIdType(a.config.ReceiveIDType).
+			UserIdType(a.config.UrgentUserIDType).
 			UrgentReceivers(receivers).
 			Build()
 		resp, err := a.client.Im.Message.UrgentPhone(ctx, req)

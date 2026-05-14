@@ -84,6 +84,57 @@ func (s *NotificationStore) UpdateStatus(ctx context.Context, id string, status 
 	return nil
 }
 
+// RefreshStatusFromDeliveryTasks recalculates a notification's aggregate status
+// from its delivery tasks.
+func (s *NotificationStore) RefreshStatusFromDeliveryTasks(ctx context.Context, notificationID string) error {
+	var rows []struct {
+		Status database.DeliveryTaskStatus `gorm:"column:status"`
+		Count  int64                       `gorm:"column:count"`
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&database.DeliveryTask{}).
+		Select("status, COUNT(*) as count").
+		Where("notification_id = ?", notificationID).
+		Group("status").
+		Scan(&rows)
+	if result.Error != nil {
+		return fmt.Errorf("failed to count delivery task statuses: %w", result.Error)
+	}
+
+	var total, active, dead, success int64
+	for _, row := range rows {
+		total += row.Count
+		switch row.Status {
+		case database.DeliveryTaskStatusPending, database.DeliveryTaskStatusProcessing, database.DeliveryTaskStatusFailed:
+			active += row.Count
+		case database.DeliveryTaskStatusDead:
+			dead += row.Count
+		case database.DeliveryTaskStatusSuccess:
+			success += row.Count
+		}
+	}
+
+	status := database.NotificationStatusPending
+	switch {
+	case total == 0:
+		status = database.NotificationStatusPending
+	case active > 0:
+		status = database.NotificationStatusProcessing
+	case dead > 0:
+		status = database.NotificationStatusFailed
+	case success == total:
+		status = database.NotificationStatusSuccess
+	default:
+		status = database.NotificationStatusFailed
+	}
+
+	if err := s.UpdateStatus(ctx, notificationID, status); err != nil {
+		return fmt.Errorf("failed to refresh notification status: %w", err)
+	}
+	return nil
+}
+
 // RecipientStore handles notification recipient operations
 type RecipientStore struct {
 	db     *gorm.DB

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sealos-notify
-  namespace: sealos
+  namespace: ns-admin
   labels:
     app: sealos-notify
 spec:
@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
       - name: sealos-notify
-        image: ghcr.io/labring/sealos-notify:latest
-        imagePullPolicy: IfNotPresent
+        image: docker.io/sealosio/sealos-notify:latest
+        imagePullPolicy: Always
         args:
           - --config
           - /etc/sealos-notify/config.yaml
@@ -30,8 +30,18 @@ spec:
         - name: DATABASE_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: postgres-secret
-              key: password
+              name: sealos-notify-pg-postgresql
+              key: postgres-password
+        - name: FEISHU_APP_ID
+          valueFrom:
+            secretKeyRef:
+              name: sealos-notify-feishu
+              key: app-id
+        - name: FEISHU_APP_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: sealos-notify-feishu
+              key: app-secret
         volumeMounts:
         - name: config
           mountPath: /etc/sealos-notify

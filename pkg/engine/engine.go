@@ -110,13 +110,20 @@ func (e *Engine) SendNotification(ctx context.Context, req *SendNotificationRequ
 	}
 
 	// Create notification record
+	notificationID := uuid.New().String()
 	notification := &database.Notification{
-		ID:             uuid.New().String(),
+		ID:             notificationID,
 		IdempotencyKey: req.IdempotencyKey,
 		Status:         database.NotificationStatusPending,
 	}
 	if err := e.notificationStore.Create(ctx, notification); err != nil {
 		return nil, fmt.Errorf("failed to create notification: %w", err)
+	}
+	if notification.ID != notificationID {
+		return &SendNotificationResponse{
+			NotificationID: notification.ID,
+			Status:         "accepted",
+		}, nil
 	}
 
 	// Create one recipient record per address entry

@@ -1,4 +1,4 @@
-.PHONY: build run clean test lint docker-build
+.PHONY: build run clean test lint docker-build docker-push
 
 # Binary name
 BINARY_NAME=sealos-notify
@@ -7,6 +7,7 @@ BINARY_NAME=sealos-notify
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}"
+IMAGE?=docker.io/sealosio/sealos-notify
 
 # Build the binary
 build:
@@ -34,7 +35,11 @@ lint:
 
 # Build Docker image
 docker-build:
-	docker build -t sealos-notify:${VERSION} .
+	docker build -t ${IMAGE}:${VERSION} -t ${IMAGE}:latest .
+
+docker-push:
+	docker push ${IMAGE}:${VERSION}
+	docker push ${IMAGE}:latest
 
 # Install dependencies
 deps:

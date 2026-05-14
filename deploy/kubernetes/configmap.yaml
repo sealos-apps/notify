@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sealos-notify-config
-  namespace: sealos
+  namespace: ns-admin
 data:
   config.yaml: |
     # Server configuration
@@ -14,10 +14,10 @@ data:
 
     # Database configuration
     database:
-      host: postgres-service
+      host: sealos-notify-pg-postgresql-0.sealos-notify-pg-postgresql-hl.ns-admin.svc.cluster.local
       port: 5432
       user: postgres
-      password: ""  # Set via environment variable
+      password: ""
       dbname: sealos_notify
       sslMode: disable
       maxOpenConns: 25
@@ -45,15 +45,17 @@ data:
 
     # Notification channels
     channels:
-      inapp:
+      feishu_app:
         enabled: true
-        provider: notification-crd
-      email:
-        enabled: false
-        provider: smtp-default
+        provider: feishu-app-urgent
 
     # Channel providers
     providers:
-      notification-crd:
-        type: inapp_crd
-        namespace: sealos
+      feishu-app-urgent:
+        type: feishu_app
+        appId: "${FEISHU_APP_ID}"
+        appSecret: "${FEISHU_APP_SECRET}"
+        receiveIdType: "open_id"
+        urgentUserIdType: "open_id"
+        msgType: "text"
+        urgentType: "app"

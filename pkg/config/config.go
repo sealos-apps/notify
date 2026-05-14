@@ -20,28 +20,28 @@ type GlobalConfig struct {
 	EnvFile    string `yaml:"-" help:"Path to .env file for environment variables" type:"path" default:".env"`
 
 	// Server configuration
-	Server ServerConfig `yaml:"server" embed:"" prefix:"server-" envprefix:"SERVER_"`
+	Server ServerConfig `yaml:"server" embed:"" prefix:"server-" envPrefix:"SERVER_"`
 
 	// Database configuration
-	Database DatabaseConfig `yaml:"database" embed:"" prefix:"database-" envprefix:"DATABASE_"`
+	Database DatabaseConfig `yaml:"database" embed:"" prefix:"database-" envPrefix:"DATABASE_"`
 
 	// Logging configuration
-	Logging LoggingConfig `yaml:"logging" embed:"" prefix:"log-" envprefix:"LOGGING_"`
+	Logging LoggingConfig `yaml:"logging" embed:"" prefix:"log-" envPrefix:"LOGGING_"`
 
 	// Dispatcher configuration
-	Dispatcher DispatcherConfig `yaml:"dispatcher" embed:"" prefix:"dispatcher-" envprefix:"DISPATCHER_"`
+	Dispatcher DispatcherConfig `yaml:"dispatcher" embed:"" prefix:"dispatcher-" envPrefix:"DISPATCHER_"`
 
 	// Default notification settings
-	Defaults DefaultsConfig `yaml:"defaults"`
+	Defaults DefaultsConfig `yaml:"defaults" kong:"-"`
 
 	// Notification channels
-	Channels map[string]ChannelConfig `yaml:"channels"`
+	Channels map[string]ChannelConfig `yaml:"channels" kong:"-"`
 
 	// Channel providers
-	Providers map[string]ProviderConfig `yaml:"providers"`
+	Providers map[string]ProviderConfig `yaml:"providers" kong:"-"`
 
 	// Notification templates
-	Templates map[string]TemplateConfig `yaml:"templates"`
+	Templates map[string]TemplateConfig `yaml:"templates" kong:"-"`
 }
 
 // ServerConfig contains HTTP server configuration
@@ -167,8 +167,35 @@ func LoadGlobalConfig(opts LoadOptions) (*GlobalConfig, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
+	expandProviderEnv(cfg.Providers)
 
 	return cfg, nil
+}
+
+func expandProviderEnv(providers map[string]ProviderConfig) {
+	for providerName, provider := range providers {
+		provider.Data = expandMapEnv(provider.Data)
+		providers[providerName] = provider
+	}
+}
+
+func expandMapEnv(data map[string]interface{}) map[string]interface{} {
+	for key, value := range data {
+		switch v := value.(type) {
+		case string:
+			data[key] = os.ExpandEnv(v)
+		case map[string]interface{}:
+			data[key] = expandMapEnv(v)
+		case []interface{}:
+			for i, item := range v {
+				if s, ok := item.(string); ok {
+					v[i] = os.ExpandEnv(s)
+				}
+			}
+			data[key] = v
+		}
+	}
+	return data
 }
 
 // Validate validates the configuration

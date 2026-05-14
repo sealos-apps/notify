@@ -278,6 +278,7 @@ func (d *Dispatcher) handleTaskSuccess(ctx context.Context, task *database.Deliv
 	if err := d.deliveryTaskStore.UpdateSuccess(ctx, task.ID); err != nil {
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task success")
 	}
+	d.refreshNotificationStatus(ctx, task.NotificationID)
 }
 
 // handleTaskFailure records failure and schedules retry if retry budget remains
@@ -294,5 +295,12 @@ func (d *Dispatcher) handleTaskFailure(ctx context.Context, task *database.Deliv
 
 	if err := d.deliveryTaskStore.UpdateFailure(ctx, task.ID, errorMsg, retryAfter); err != nil {
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task failure")
+	}
+	d.refreshNotificationStatus(ctx, task.NotificationID)
+}
+
+func (d *Dispatcher) refreshNotificationStatus(ctx context.Context, notificationID string) {
+	if err := d.notificationStore.RefreshStatusFromDeliveryTasks(ctx, notificationID); err != nil {
+		d.logger.WithError(err).WithField("notification_id", notificationID).Error("Failed to refresh notification status")
 	}
 }
