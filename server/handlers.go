@@ -36,6 +36,10 @@ func (s *Server) handleSendNotification(c *gin.Context) {
 		return
 	}
 
+	if principal := principalFromContext(c); principal != nil {
+		req.SenderAppID = principal.AppID
+	}
+
 	// Send notification
 	response, err := s.engine.SendNotification(c.Request.Context(), &req)
 	if err != nil {

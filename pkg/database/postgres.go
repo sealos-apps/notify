@@ -133,12 +133,16 @@ CREATE INDEX IF NOT EXISTS idx_templates_channel ON templates(channel);
 CREATE TABLE IF NOT EXISTS notifications (
     id VARCHAR(64) PRIMARY KEY,
     idempotency_key VARCHAR(255) UNIQUE NOT NULL,
+    sender_app_id VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS sender_app_id VARCHAR(255);
+
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
+CREATE INDEX IF NOT EXISTS idx_notifications_sender_app_id ON notifications(sender_app_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 
 -- Notification recipients table (params = all KVs: identifiers + template variables)

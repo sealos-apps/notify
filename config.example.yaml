@@ -32,6 +32,13 @@ dispatcher:
   batchSize: 100
   leaseTimeout: 5m
 
+# API authentication.
+# All /api/v1 APIs require app credentials. /health remains unauthenticated for probes.
+# In Kubernetes this file should be mounted from a Secret and can be hot reloaded.
+auth:
+  enabled: true
+  credentialsFilePath: /etc/sealos-notify/auth/apps.yaml
+
 # Default notification settings
 defaults:
   timeoutSeconds: 10

@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/labring/sealos-notify/pkg/adapter"
 	feishuapp "github.com/labring/sealos-notify/pkg/adapter/feishu_app"
+	"github.com/labring/sealos-notify/pkg/auth"
 	"github.com/labring/sealos-notify/pkg/config"
 	"github.com/labring/sealos-notify/pkg/database"
 	"github.com/labring/sealos-notify/pkg/dispatcher"
@@ -27,6 +28,7 @@ type Server struct {
 	db                   *database.DB
 	engine               *engine.Engine
 	dispatcher           *dispatcher.Dispatcher
+	authManager          *auth.Manager
 	adapters             map[string]adapter.Adapter
 	notificationStore    *storage.NotificationStore
 	recipientStore       *storage.RecipientStore
@@ -116,6 +118,18 @@ func (s *Server) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to start dispatcher: %w", err)
 	}
 
+	s.authManager, err = auth.NewManager(
+		s.config.Auth.CredentialsFilePath,
+		s.config.Auth.Enabled,
+		s.logger.WithField("subcomponent", "auth"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to initialize auth manager: %w", err)
+	}
+	if err := s.authManager.Start(); err != nil {
+		return fmt.Errorf("failed to start auth manager: %w", err)
+	}
+
 	s.setupHTTPServer()
 
 	s.logger.Info("Server initialized successfully")
@@ -203,6 +217,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.logger.WithError(err).Error("Failed to stop dispatcher")
 		}
 	}
+	if s.authManager != nil {
+		if err := s.authManager.Stop(); err != nil {
+			s.logger.WithError(err).Error("Failed to stop auth manager")
+		}
+	}
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			s.logger.WithError(err).Error("Failed to stop HTTP server")
@@ -228,6 +247,12 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 	if err := s.initAdapters(); err != nil {
 		s.logger.WithError(err).Error("Failed to reinitialize adapters")
 		return err
+	}
+	if s.authManager != nil {
+		if err := s.authManager.Update(s.config.Auth.CredentialsFilePath, s.config.Auth.Enabled); err != nil {
+			s.logger.WithError(err).Error("Failed to reload auth credentials")
+			return err
+		}
 	}
 
 	s.logger.Info("Server configuration reloaded")

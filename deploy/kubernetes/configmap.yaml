@@ -37,6 +37,11 @@ data:
       batchSize: 100
       leaseTimeout: 5m
 
+    # API authentication
+    auth:
+      enabled: true
+      credentialsFilePath: /etc/sealos-notify/auth/apps.yaml
+
     # Default notification settings
     defaults:
       timeoutSeconds: 10

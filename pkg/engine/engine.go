@@ -59,6 +59,8 @@ type RecipientRequest struct {
 //	}
 type SendNotificationRequest struct {
 	IdempotencyKey string `json:"idempotencyKey"`
+	// SenderAppID is filled by the authenticated HTTP middleware.
+	SenderAppID string `json:"-"`
 	// Channels maps channel name → template + params
 	Channels map[string]ChannelRequest `json:"channels"`
 	// Recipients is a list of {type, value} address entries
@@ -114,6 +116,7 @@ func (e *Engine) SendNotification(ctx context.Context, req *SendNotificationRequ
 	notification := &database.Notification{
 		ID:             notificationID,
 		IdempotencyKey: req.IdempotencyKey,
+		SenderAppID:    req.SenderAppID,
 		Status:         database.NotificationStatusPending,
 	}
 	if err := e.notificationStore.Create(ctx, notification); err != nil {
@@ -150,6 +153,7 @@ func (e *Engine) SendNotification(ctx context.Context, req *SendNotificationRequ
 
 	e.logger.WithFields(log.Fields{
 		"notification_id": notification.ID,
+		"sender_app_id":   notification.SenderAppID,
 		"recipients":      len(recipients),
 		"tasks":           len(tasks),
 	}).Info("Notification created")
@@ -266,10 +270,11 @@ func (e *Engine) GetNotificationStatus(ctx context.Context, notificationID strin
 	}
 
 	return map[string]interface{}{
-		"id":         notification.ID,
-		"status":     notification.Status,
-		"created_at": notification.CreatedAt,
-		"updated_at": notification.UpdatedAt,
-		"tasks":      tasks,
+		"id":          notification.ID,
+		"status":      notification.Status,
+		"senderAppId": notification.SenderAppID,
+		"created_at":  notification.CreatedAt,
+		"updated_at":  notification.UpdatedAt,
+		"tasks":       tasks,
 	}, nil
 }

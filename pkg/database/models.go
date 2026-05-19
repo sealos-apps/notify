@@ -57,6 +57,7 @@ func (Template) TableName() string { return "templates" }
 type Notification struct {
 	ID             string             `gorm:"primaryKey;column:id;type:varchar(64)"                        json:"id"`
 	IdempotencyKey string             `gorm:"uniqueIndex;column:idempotency_key;type:varchar(255);not null" json:"idempotencyKey"`
+	SenderAppID    string             `gorm:"column:sender_app_id;type:varchar(255);index"                  json:"senderAppId,omitempty"`
 	Status         NotificationStatus `gorm:"column:status;type:varchar(50);not null;default:pending"       json:"status"`
 	CreatedAt      time.Time          `gorm:"column:created_at;autoCreateTime"                              json:"createdAt"`
 	UpdatedAt      time.Time          `gorm:"column:updated_at;autoUpdateTime"                              json:"updatedAt"`

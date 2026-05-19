@@ -31,6 +31,9 @@ type GlobalConfig struct {
 	// Dispatcher configuration
 	Dispatcher DispatcherConfig `yaml:"dispatcher" embed:"" prefix:"dispatcher-" envPrefix:"DISPATCHER_"`
 
+	// API authentication configuration
+	Auth AuthConfig `yaml:"auth" embed:"" prefix:"auth-" envPrefix:"AUTH_"`
+
 	// Default notification settings
 	Defaults DefaultsConfig `yaml:"defaults" kong:"-"`
 
@@ -78,6 +81,12 @@ type DispatcherConfig struct {
 	Interval     time.Duration `yaml:"interval" name:"interval" env:"INTERVAL" default:"10s" help:"Task polling interval"`
 	BatchSize    int           `yaml:"batchSize" name:"batch-size" env:"BATCH_SIZE" default:"100" help:"Number of tasks to fetch per batch"`
 	LeaseTimeout time.Duration `yaml:"leaseTimeout" name:"lease-timeout" env:"LEASE_TIMEOUT" default:"5m" help:"Task lease timeout"`
+}
+
+// AuthConfig contains app credential authentication configuration.
+type AuthConfig struct {
+	Enabled             bool   `yaml:"enabled" name:"enabled" env:"ENABLED" default:"true" help:"Enable API authentication"`
+	CredentialsFilePath string `yaml:"credentialsFilePath" name:"credentials-file-path" env:"CREDENTIALS_FILE_PATH" default:"" help:"Path to mounted app credential Secret file"`
 }
 
 // DefaultsConfig contains default notification settings
@@ -207,6 +216,9 @@ func (c *GlobalConfig) Validate() error {
 	if c.Database.DBName == "" {
 		return fmt.Errorf("database name is required")
 	}
+	if c.Auth.Enabled && c.Auth.CredentialsFilePath == "" {
+		return fmt.Errorf("auth.credentialsFilePath is required when auth is enabled")
+	}
 
 	// Validate channels
 	for name, channel := range c.Channels {
@@ -238,6 +250,7 @@ func (c *GlobalConfig) Validate() error {
 func (c *GlobalConfig) ApplyHotReload(newConfig *GlobalConfig) {
 	c.Logging = newConfig.Logging
 	c.Dispatcher = newConfig.Dispatcher
+	c.Auth = newConfig.Auth
 	c.Defaults = newConfig.Defaults
 	c.Channels = newConfig.Channels
 	c.Providers = newConfig.Providers

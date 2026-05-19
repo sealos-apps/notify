@@ -46,6 +46,9 @@ spec:
         - name: config
           mountPath: /etc/sealos-notify
           readOnly: true
+        - name: api-auth
+          mountPath: /etc/sealos-notify/auth
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
@@ -73,3 +76,6 @@ spec:
       - name: config
         configMap:
           name: sealos-notify-config
+      - name: api-auth
+        secret:
+          secretName: sealos-notify-api-auth

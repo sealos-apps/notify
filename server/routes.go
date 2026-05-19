@@ -12,6 +12,7 @@ func (s *Server) setupRoutes(router *gin.Engine) {
 
 	// API v1
 	v1 := router.Group("/api/v1")
+	v1.Use(s.authMiddleware())
 	{
 		// Notifications
 		v1.POST("/notifications", s.handleSendNotification)
