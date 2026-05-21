@@ -2,11 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sealos-notify
-  namespace: ns-admin
+  namespace: notify-system
   labels:
     app: sealos-notify
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: sealos-notify
@@ -15,67 +15,81 @@ spec:
       labels:
         app: sealos-notify
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
-      - name: sealos-notify
-        image: docker.io/sealosio/sealos-notify:latest
-        imagePullPolicy: Always
-        args:
-          - --config
-          - /etc/sealos-notify/config.yaml
-        ports:
-        - containerPort: 8080
-          name: http
-          protocol: TCP
-        env:
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: sealos-notify-pg-postgresql
-              key: postgres-password
-        - name: FEISHU_APP_ID
-          valueFrom:
-            secretKeyRef:
-              name: sealos-notify-feishu
-              key: app-id
-        - name: FEISHU_APP_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: sealos-notify-feishu
-              key: app-secret
-        volumeMounts:
-        - name: config
-          mountPath: /etc/sealos-notify
-          readOnly: true
-        - name: api-auth
-          mountPath: /etc/sealos-notify/auth
-          readOnly: true
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
+        - name: sealos-notify
+          image: ghcr.io/sealos-apps/notify:sha-abe7040
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - --config-path
+            - /etc/sealos-notify/config.yaml
+            - --auth-credentials-file-path
+            - /etc/sealos-notify/auth/apps.yaml
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sealos-notify-pg-conn-credential
+                  key: password
+            - name: FEISHU_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sealos-notify-feishu
+                  key: app-id
+            - name: FEISHU_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sealos-notify-feishu
+                  key: app-secret
+            - name: AUTH_CREDENTIALS_FILE_PATH
+              value: /etc/sealos-notify/auth/apps.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/sealos-notify
+              readOnly: true
+            - name: api-auth
+              mountPath: /etc/sealos-notify/auth
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
       volumes:
-      - name: config
-        configMap:
-          name: sealos-notify-config
-      - name: api-auth
-        secret:
-          secretName: sealos-notify-api-auth
+        - name: config
+          configMap:
+            name: sealos-notify-config
+        - name: api-auth
+          secret:
+            secretName: sealos-notify-api-auth
