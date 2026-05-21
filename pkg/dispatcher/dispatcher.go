@@ -29,6 +29,7 @@ type Dispatcher struct {
 	cancel               context.CancelFunc
 	wg                   sync.WaitGroup
 	logger               *log.Entry
+	mu                   sync.Mutex
 }
 
 // New creates a new dispatcher
@@ -303,4 +304,10 @@ func (d *Dispatcher) refreshNotificationStatus(ctx context.Context, notification
 	if err := d.notificationStore.RefreshStatusFromDeliveryTasks(ctx, notificationID); err != nil {
 		d.logger.WithError(err).WithField("notification_id", notificationID).Error("Failed to refresh notification status")
 	}
+}
+
+func (d *Dispatcher) UpdateAdapters(adapters map[string]adapter.Adapter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.adapters = adapters
 }

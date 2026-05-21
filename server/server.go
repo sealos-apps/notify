@@ -254,6 +254,7 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 			return err
 		}
 	}
+	s.dispatcher.UpdateAdapters(s.adapters)
 
 	s.logger.Info("Server configuration reloaded")
 	return nil
