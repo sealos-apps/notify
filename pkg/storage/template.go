@@ -45,7 +45,7 @@ func (s *TemplateStore) GetByName(ctx context.Context, name string) (*database.T
 	result := s.db.WithContext(ctx).Where("name = ?", name).First(tpl)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("template not found: %s", name)
+			return nil, fmt.Errorf("%w: template %s", ErrNotFound, name)
 		}
 		return nil, fmt.Errorf("failed to get template: %w", result.Error)
 	}
@@ -83,7 +83,7 @@ func (s *TemplateStore) Update(ctx context.Context, name string, updates *databa
 		return fmt.Errorf("failed to update template: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("template not found: %s", name)
+		return fmt.Errorf("%w: template %s", ErrNotFound, name)
 	}
 	return nil
 }
@@ -95,7 +95,7 @@ func (s *TemplateStore) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete template: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("template not found: %s", name)
+		return fmt.Errorf("%w: template %s", ErrNotFound, name)
 	}
 	return nil
 }

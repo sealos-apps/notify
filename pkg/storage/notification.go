@@ -54,7 +54,7 @@ func (s *NotificationStore) GetByID(ctx context.Context, id string) (*database.N
 	result := s.db.WithContext(ctx).First(notification, "id = ?", id)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("notification not found: %s", id)
+			return nil, fmt.Errorf("%w: notification %s", ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("failed to get notification: %w", result.Error)
 	}
@@ -174,7 +174,7 @@ func (s *RecipientStore) GetByID(ctx context.Context, id string) (*database.Noti
 	result := s.db.WithContext(ctx).First(recipient, "id = ?", id)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("recipient not found: %s", id)
+			return nil, fmt.Errorf("%w: recipient %s", ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("failed to get recipient: %w", result.Error)
 	}
