@@ -91,10 +91,9 @@ func (s *Server) handleGetDeliveries(c *gin.Context) {
 	// Get delivery tasks
 	tasks, err := s.deliveryTaskStore.GetByNotificationID(c.Request.Context(), notificationID)
 	if err != nil {
-		s.logger.WithError(err).Error("Failed to get delivery tasks")
+		s.logger.WithError(err).WithField("notification_id", notificationID).Error("Failed to get delivery tasks")
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "failed to get delivery tasks",
-			"details": err.Error(),
+			"error": "failed to get delivery tasks,internal server error",
 		})
 		return
 	}

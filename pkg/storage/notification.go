@@ -115,7 +115,7 @@ func (s *NotificationStore) RefreshStatusFromDeliveryTasks(ctx context.Context, 
 		}
 	}
 
-	status := database.NotificationStatusPending
+	var status database.NotificationStatus
 	switch {
 	case total == 0:
 		status = database.NotificationStatusPending

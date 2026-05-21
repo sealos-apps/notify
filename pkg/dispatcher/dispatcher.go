@@ -29,6 +29,7 @@ type Dispatcher struct {
 	cancel               context.CancelFunc
 	wg                   sync.WaitGroup
 	logger               *log.Entry
+	mu                   sync.RWMutex
 }
 
 // New creates a new dispatcher
@@ -174,7 +175,7 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 	logger.Debug("Processing task")
 
 	// 1. Get adapter
-	adapterInstance, ok := d.adapters[task.Provider]
+	adapterInstance, ok := d.getAdapter(task.Provider)
 	if !ok {
 		logger.Errorf("Adapter not found for provider: %s", task.Provider)
 		d.handleTaskFailure(ctx, task, fmt.Sprintf("adapter not found: %s", task.Provider), nil)
@@ -303,4 +304,17 @@ func (d *Dispatcher) refreshNotificationStatus(ctx context.Context, notification
 	if err := d.notificationStore.RefreshStatusFromDeliveryTasks(ctx, notificationID); err != nil {
 		d.logger.WithError(err).WithField("notification_id", notificationID).Error("Failed to refresh notification status")
 	}
+}
+
+func (d *Dispatcher) getAdapter(provider string) (adapter.Adapter, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	adapterInstance, ok := d.adapters[provider]
+	return adapterInstance, ok
+}
+
+func (d *Dispatcher) UpdateAdapters(adapters map[string]adapter.Adapter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.adapters = adapters
 }
