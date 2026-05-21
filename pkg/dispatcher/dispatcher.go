@@ -3,6 +3,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -109,6 +110,8 @@ func (d *Dispatcher) dispatchLoop(ctx context.Context) {
 
 // dispatchBatch acquires pending and retry tasks in parallel, then fans them out
 func (d *Dispatcher) dispatchBatch(ctx context.Context) {
+	d.expireProcessingTasks(ctx)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -143,6 +146,24 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) {
 	}()
 
 	wg.Wait()
+}
+
+func (d *Dispatcher) expireProcessingTasks(ctx context.Context) {
+	notificationIDs, expiredCount, err := d.deliveryTaskStore.ExpireProcessingTasks(
+		ctx, d.config.Defaults.RetryBackoffSeconds, d.config.Dispatcher.BatchSize,
+	)
+	if err != nil {
+		d.logger.WithError(err).Error("Failed to expire processing tasks")
+		return
+	}
+	if expiredCount == 0 {
+		return
+	}
+
+	d.logger.WithField("count", expiredCount).Warn("Expired processing tasks")
+	for _, notificationID := range notificationIDs {
+		d.refreshNotificationStatus(ctx, notificationID)
+	}
 }
 
 // processTasks spawns a goroutine per task (all tracked by d.wg)
@@ -276,8 +297,13 @@ func (d *Dispatcher) processTask(ctx context.Context, task *database.DeliveryTas
 
 // handleTaskSuccess marks the task as successfully completed
 func (d *Dispatcher) handleTaskSuccess(ctx context.Context, task *database.DeliveryTask) {
-	if err := d.deliveryTaskStore.UpdateSuccess(ctx, task.ID); err != nil {
+	if err := d.deliveryTaskStore.UpdateSuccess(ctx, task.ID, d.leaseOwner); err != nil {
+		if errors.Is(err, storage.ErrLeaseNotHeld) {
+			d.logger.WithError(err).WithField("task_id", task.ID).Warn("Skipped task success update because lease is no longer held")
+			return
+		}
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task success")
+		return
 	}
 	d.refreshNotificationStatus(ctx, task.NotificationID)
 }
@@ -286,18 +312,30 @@ func (d *Dispatcher) handleTaskSuccess(ctx context.Context, task *database.Deliv
 func (d *Dispatcher) handleTaskFailure(ctx context.Context, task *database.DeliveryTask, errorMsg string, _ *time.Duration) {
 	var retryAfter *time.Duration
 	if task.RetryCount < task.MaxRetry {
-		backoffIndex := task.RetryCount
-		if backoffIndex >= len(d.config.Defaults.RetryBackoffSeconds) {
-			backoffIndex = len(d.config.Defaults.RetryBackoffSeconds) - 1
-		}
-		duration := time.Duration(d.config.Defaults.RetryBackoffSeconds[backoffIndex]) * time.Second
+		duration := d.retryBackoffDuration(task.RetryCount)
 		retryAfter = &duration
 	}
 
-	if err := d.deliveryTaskStore.UpdateFailure(ctx, task.ID, errorMsg, retryAfter); err != nil {
+	if err := d.deliveryTaskStore.UpdateFailure(ctx, task.ID, d.leaseOwner, errorMsg, retryAfter); err != nil {
+		if errors.Is(err, storage.ErrLeaseNotHeld) {
+			d.logger.WithError(err).WithField("task_id", task.ID).Warn("Skipped task failure update because lease is no longer held")
+			return
+		}
 		d.logger.WithError(err).WithField("task_id", task.ID).Error("Failed to update task failure")
+		return
 	}
 	d.refreshNotificationStatus(ctx, task.NotificationID)
+}
+
+func (d *Dispatcher) retryBackoffDuration(retryCount int) time.Duration {
+	if len(d.config.Defaults.RetryBackoffSeconds) == 0 {
+		return 0
+	}
+	backoffIndex := retryCount
+	if backoffIndex >= len(d.config.Defaults.RetryBackoffSeconds) {
+		backoffIndex = len(d.config.Defaults.RetryBackoffSeconds) - 1
+	}
+	return time.Duration(d.config.Defaults.RetryBackoffSeconds[backoffIndex]) * time.Second
 }
 
 func (d *Dispatcher) refreshNotificationStatus(ctx context.Context, notificationID string) {

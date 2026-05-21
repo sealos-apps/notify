@@ -123,11 +123,77 @@ func (s *DeliveryTaskStore) AcquireRetryTasks(ctx context.Context, leaseOwner st
 	return tasks, nil
 }
 
+// ExpireProcessingTasks marks expired processing tasks as failed or dead so they can flow through retry handling.
+func (s *DeliveryTaskStore) ExpireProcessingTasks(ctx context.Context, retryBackoffSeconds []int, limit int) ([]string, int64, error) {
+	if limit <= 0 {
+		return nil, 0, nil
+	}
+
+	var tasks []*database.DeliveryTask
+	notificationIDs := make(map[string]struct{})
+	now := time.Now()
+	var affected int64
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.
+			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status = ? AND lease_expire_at IS NOT NULL AND lease_expire_at <= ?",
+				string(database.DeliveryTaskStatusProcessing), now).
+			Order("lease_expire_at ASC").
+			Limit(limit).
+			Find(&tasks)
+		if result.Error != nil {
+			return result.Error
+		}
+		if len(tasks) == 0 {
+			return nil
+		}
+
+		for _, task := range tasks {
+			updates := map[string]interface{}{
+				"retry_count":     gorm.Expr("retry_count + 1"),
+				"last_error":      "processing lease expired",
+				"lease_owner":     nil,
+				"lease_expire_at": nil,
+			}
+			if task.RetryCount < task.MaxRetry {
+				retryAfter := retryBackoffDuration(task.RetryCount, retryBackoffSeconds)
+				updates["status"] = string(database.DeliveryTaskStatusFailed)
+				updates["next_retry_at"] = now.Add(retryAfter)
+			} else {
+				updates["status"] = string(database.DeliveryTaskStatusDead)
+				updates["next_retry_at"] = nil
+			}
+
+			result := tx.Model(&database.DeliveryTask{}).
+				Where("id = ? AND status = ?", task.ID, string(database.DeliveryTaskStatusProcessing)).
+				Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected > 0 {
+				affected += result.RowsAffected
+				notificationIDs[task.NotificationID] = struct{}{}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to expire processing tasks: %w", err)
+	}
+
+	ids := make([]string, 0, len(notificationIDs))
+	for id := range notificationIDs {
+		ids = append(ids, id)
+	}
+	return ids, affected, nil
+}
+
 // UpdateSuccess marks a task as successfully completed and clears the lease
-func (s *DeliveryTaskStore) UpdateSuccess(ctx context.Context, taskID string) error {
+func (s *DeliveryTaskStore) UpdateSuccess(ctx context.Context, taskID string, leaseOwner string) error {
 	result := s.db.WithContext(ctx).
 		Model(&database.DeliveryTask{}).
-		Where("id = ?", taskID).
+		Where("id = ? AND lease_owner = ?", taskID, leaseOwner).
 		Updates(map[string]interface{}{
 			"status":          string(database.DeliveryTaskStatusSuccess),
 			"lease_owner":     nil,
@@ -137,11 +203,14 @@ func (s *DeliveryTaskStore) UpdateSuccess(ctx context.Context, taskID string) er
 	if result.Error != nil {
 		return fmt.Errorf("failed to update task success: %w", result.Error)
 	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("failed to update task success: %w", ErrLeaseNotHeld)
+	}
 	return nil
 }
 
 // UpdateFailure marks a task as failed, increments retry count, and schedules retry if applicable
-func (s *DeliveryTaskStore) UpdateFailure(ctx context.Context, taskID string, errorMsg string, retryAfter *time.Duration) error {
+func (s *DeliveryTaskStore) UpdateFailure(ctx context.Context, taskID string, leaseOwner string, errorMsg string, retryAfter *time.Duration) error {
 	updates := map[string]interface{}{
 		"retry_count":     gorm.Expr("retry_count + 1"),
 		"last_error":      errorMsg,
@@ -158,12 +227,26 @@ func (s *DeliveryTaskStore) UpdateFailure(ctx context.Context, taskID string, er
 
 	result := s.db.WithContext(ctx).
 		Model(&database.DeliveryTask{}).
-		Where("id = ?", taskID).
+		Where("id = ? AND lease_owner = ?", taskID, leaseOwner).
 		Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update task failure: %w", result.Error)
 	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("failed to update task failure: %w", ErrLeaseNotHeld)
+	}
 	return nil
+}
+
+func retryBackoffDuration(retryCount int, retryBackoffSeconds []int) time.Duration {
+	if len(retryBackoffSeconds) == 0 {
+		return 0
+	}
+	backoffIndex := retryCount
+	if backoffIndex >= len(retryBackoffSeconds) {
+		backoffIndex = len(retryBackoffSeconds) - 1
+	}
+	return time.Duration(retryBackoffSeconds[backoffIndex]) * time.Second
 }
 
 // GetByNotificationID retrieves all delivery tasks for a notification
