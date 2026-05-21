@@ -1,48 +1,49 @@
 # sealos-notify
 
-sealos-notify 是 Sealos 平台的统一通知服务，支持多渠道通知投递，具备可靠重试、幂等保证和高可用能力。
+sealos-notify is the unified notification service for the Sealos platform. It supports multi-channel delivery with reliable retries, idempotent requests, and horizontally scalable workers.
 
-## 功能特性
+## Features
 
-- **多渠道支持** — 站内信（CRD）、邮件、短信、语音、飞书 Webhook、飞书应用
-- **飞书加急通知** — 发送消息后自动触发应用内 / 短信 / 电话加急提醒
-- **模板驱动** — 所有通知内容通过数据库中管理的模板渲染，API 管理模板 CRUD
-- **接口认证与审计** — 所有 `/api/v1` 接口使用 `appId` + `appSecret` 认证，通知记录保存发送方 `appId`
-- **可靠投递** — 数据库任务队列 + 指数退避重试，支持最大重试次数配置
-- **幂等 API** — 相同 `idempotencyKey` 的重复请求安全幂等
-- **高可用** — 多副本共享任务队列，通过数据库级 `FOR UPDATE SKIP LOCKED` 实现无冲突任务分配
-- **配置热加载** — 修改渠道、Provider 配置无需重启服务
-- **优雅退出** — 停机时等待所有进行中的投递任务完成
+- **Multiple channels**: in-app messages through CRDs, email, SMS, voice calls, Feishu webhooks, and Feishu app messages.
+- **Feishu urgent notifications**: after sending a message, the Feishu app adapter can trigger in-app, SMS, or phone-call urgent reminders.
+- **Template-driven content**: notification content is rendered from database-managed templates, with template CRUD exposed through the API.
+- **API authentication and auditability**: all `/api/v1` endpoints use `appId` + `appSecret` authentication, and notifications store the sender `appId`.
+- **Reliable delivery**: database-backed delivery queue, exponential backoff retries, and configurable retry limits.
+- **Idempotent API**: repeated requests with the same `idempotencyKey` are handled safely.
+- **High availability**: multiple replicas share the delivery queue and use database-level `FOR UPDATE SKIP LOCKED` to claim tasks without conflicts.
+- **Hot reload**: channel, provider, and authentication credential changes can be reloaded without restarting the service.
+- **Graceful shutdown**: the service waits for in-flight delivery tasks before exiting.
 
-## 架构概览
+## Architecture
 
+```text
+HTTP API -> Engine -> delivery_tasks table -> Dispatcher -> Channel Adapters
+                                                |
+                                                v
+                                      delivery_attempts table
 ```
-HTTP API → Engine → delivery_tasks 表 → Dispatcher → Channel Adapters
-                                              ↕
-                                      delivery_attempts 表
-```
 
-1. `POST /api/v1/notifications` 创建通知记录、接收人和投递任务（每个接收人 × 渠道生成一条任务）。
-2. **Dispatcher** 按配置间隔轮询任务队列，通过 `FOR UPDATE SKIP LOCKED` 并发获取待执行和待重试任务（两类任务并行拉取）。
-3. 每条任务在独立 goroutine 中加载模板、渲染内容、调用对应 **Adapter**，结果写入 `delivery_attempts`；失败按退避调度重试，超过 `maxRetry` 后标记为 `dead`。
+1. `POST /api/v1/notifications` creates a notification record, recipient records, and delivery tasks. A task is generated for each compatible recipient and channel pair.
+2. The **Dispatcher** polls the queue at the configured interval. It concurrently claims pending and retry-ready tasks with `FOR UPDATE SKIP LOCKED`.
+3. Each task runs in its own goroutine. The dispatcher loads the template, renders content, calls the configured **Adapter**, records the result in `delivery_attempts`, and schedules retries with backoff. Tasks that exceed `maxRetry` are marked `dead`.
 
-## 快速开始
+## Quick Start
 
-### 前置依赖
+### Prerequisites
 
 - Go 1.21+
 - PostgreSQL 14+
 
-### 1. 克隆并准备配置
+### 1. Clone and Prepare Configuration
 
 ```bash
 git clone https://github.com/labring/sealos-notify.git
 cd sealos-notify
 cp config.example.yaml config.yaml
-# 按需修改 config.yaml 中的数据库配置和渠道配置
+# Edit config.yaml for your database and channel settings.
 ```
 
-### 2. 启动 PostgreSQL（开发用）
+### 2. Start PostgreSQL for Development
 
 ```bash
 docker run -d --name postgres \
@@ -51,9 +52,9 @@ docker run -d --name postgres \
   -p 5432:5432 postgres:16-alpine
 ```
 
-### 3. 运行服务
+### 3. Run the Service
 
-本地开发可以先创建一个认证凭证文件：
+For local development, create an API credential file first:
 
 ```bash
 mkdir -p /tmp/sealos-notify-auth
@@ -66,23 +67,23 @@ apps:
 EOF
 ```
 
-并将 `config.yaml` 中的 `auth.credentialsFilePath` 改成 `/tmp/sealos-notify-auth/apps.yaml`。
+Then set `auth.credentialsFilePath` in `config.yaml` to `/tmp/sealos-notify-auth/apps.yaml`.
 
 ```bash
 go run . -c config.yaml
 ```
 
-或使用 Docker：
+Or run with Docker:
 
 ```bash
 docker build -t sealos-notify .
 docker run -p 8080:8080 -v $(pwd)/config.yaml:/config.yaml sealos-notify -c /config.yaml
 ```
 
-### 4. 创建模板并发送通知
+### 4. Create a Template and Send a Notification
 
 ```bash
-# 先创建模板
+# Create a template.
 curl -X POST http://localhost:8080/api/v1/templates \
   -H "Content-Type: application/json" \
   -H "X-App-Id: notify-console" \
@@ -91,10 +92,11 @@ curl -X POST http://localhost:8080/api/v1/templates \
     "name": "feishu-alert",
     "channel": "feishu_app",
     "msgType": "text",
-    "body": "【告警】{{ .incident }}（严重级别：{{ .severity }}）"
+    "body": "[Alert] {{ .incident }} (severity: {{ .severity }})"
   }'
 
-# 再发送通知（模板参数放在 channels 里，recipients 用 type+value 结构）
+# Send a notification. Template parameters live under channels;
+# recipients use the {type, value} structure.
 curl -X POST http://localhost:8080/api/v1/notifications \
   -H "Content-Type: application/json" \
   -H "X-App-Id: notify-console" \
@@ -104,7 +106,7 @@ curl -X POST http://localhost:8080/api/v1/notifications \
     "channels": {
       "feishu_app": {
         "template": "feishu-alert",
-        "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+        "params": {"incident": "database primary unavailable", "severity": "P0"}
       }
     },
     "recipients": [
@@ -114,210 +116,220 @@ curl -X POST http://localhost:8080/api/v1/notifications \
   }'
 ```
 
-## API 接口
+## API
 
-除 `GET /health` 外，所有 `/api/v1/*` 接口都需要认证。推荐使用 Header：
+All `/api/v1/*` endpoints require authentication except `GET /health`. The recommended authentication method is headers:
 
 ```http
 X-App-Id: notify-console
 X-App-Secret: dev-secret
 ```
 
-也支持 `Authorization: Bearer <appId>:<appSecret>`。详细说明见 [docs/api-authentication.md](docs/api-authentication.md)。
+`Authorization: Bearer <appId>:<appSecret>` is also supported.
 
-### 通知
+Credential files support YAML or JSON:
 
-#### `POST /api/v1/notifications` — 发送通知
+```yaml
+apps:
+  - appId: notify-console
+    appSecret: CHANGE_ME_TO_A_LONG_RANDOM_SECRET
+    name: Notify Console
+    enabled: true
+```
 
-**请求体：**
+Disabled credentials are ignored. Credential file changes are hot reloaded when the auth watcher is running.
+
+### Notifications
+
+#### `POST /api/v1/notifications` - Send a Notification
+
+Request body:
 
 ```json
 {
-  "idempotencyKey": "唯一标识，相同 key 的请求只执行一次",
+  "idempotencyKey": "unique key; repeated requests with the same key run once",
   "channels": {
     "feishu_app": {
       "template": "feishu-alert",
-      "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+      "params": {"incident": "database primary unavailable", "severity": "P0"}
     },
     "email": {
       "template": "email-alert",
-      "params": {"incident": "DB 主节点不可用", "severity": "P0"}
+      "params": {"incident": "database primary unavailable", "severity": "P0"}
     }
   },
   "recipients": [
     {"type": "feishu_user_id", "value": "ou_xxxxxxxx"},
-    {"type": "email",          "value": "alice@example.com"},
-    {"type": "phone",          "value": "+8613800000000"}
+    {"type": "email", "value": "alice@example.com"},
+    {"type": "phone", "value": "+8613800000000"}
   ]
 }
 ```
 
-- `channels`：`map[渠道名 → {template, params}]`
-  - `template`：模板名称（必填）
-  - `params`：渲染模板时注入的参数，所有接收人共享同一份渲染结果
-- `recipients`：`{type, value}` 列表，每条记录是一个接收地址
-  - `type`：地址类型（见下表），用于匹配渠道
-  - `value`：实际地址（open_id、邮箱、手机号等）
+- `channels`: a map from channel name to `{template, params}`.
+- `template`: the template name stored in the database. This field is required for each channel.
+- `params`: values injected into the template. All recipients for the same channel share the same rendered content.
+- `recipients`: a list of delivery addresses.
+- `type`: the address type used to match recipients to channels.
+- `value`: the concrete delivery address, such as an Open ID, email address, or phone number.
 
-recipient `type` 与渠道的对应关系：
+Recipient `type` to channel mapping:
 
-| `type` 值        | 匹配的渠道                     |
-|------------------|--------------------------------|
-| `email`          | `email`、`feishu_app`、`feishu_webhook` |
-| `phone`          | `sms`、`voice`                 |
-| `user_id`        | `inapp`                        |
-| `feishu_user_id` | `feishu_app`、`feishu_webhook` |
+| `type` value | Matching channels |
+| --- | --- |
+| `email` | `email`, `feishu_app`, `feishu_webhook` |
+| `phone` | `sms`, `voice` |
+| `user_id` | `inapp` |
+| `feishu_user_id` | `feishu_app`, `feishu_webhook` |
 
-**响应：**
+Response:
 
 ```json
 {"notificationId": "uuid", "status": "accepted"}
 ```
 
-#### `GET /api/v1/notifications/:id` — 查询通知状态
+#### `GET /api/v1/notifications/:id` - Get Notification Status
 
-返回通知详情及所有投递任务，包含发送方 `senderAppId`。
+Returns the notification details and all delivery tasks, including `senderAppId`.
 
-#### `GET /api/v1/notifications/:id/deliveries` — 查询投递任务
+#### `GET /api/v1/notifications/:id/deliveries` - List Delivery Tasks
 
-返回该通知的所有投递任务列表。
+Returns all delivery tasks for the notification.
 
----
+### Template Management
 
-### 模板管理
+Templates are stored in the database and managed through the API. Each template belongs to one channel and contains a Go `text/template` body plus an optional subject for email.
 
-模板存储在数据库中，通过 API 管理。每个模板绑定一个渠道，包含用 Go `text/template` 语法编写的消息体（以及可选的邮件主题）。
+#### `POST /api/v1/templates` - Create a Template
 
-#### `POST /api/v1/templates` — 创建模板
-
-**请求体：**
+Request body:
 
 ```json
 {
-  "name":         "feishu-incident",
-  "channel":      "feishu_app",
-  "description":  "飞书故障告警模板",
-  "subject":      "",
-  "body":         "【{{ .severity }}】{{ .incident }}\n影响用户：{{ .name }}",
-  "msgType":      "text",
+  "name": "feishu-incident",
+  "channel": "feishu_app",
+  "description": "Feishu incident alert template",
+  "subject": "",
+  "body": "[{{ .severity }}] {{ .incident }}\nAffected user: {{ .name }}",
+  "msgType": "text",
   "templateCode": ""
 }
 ```
 
-| 字段           | 说明                                                              |
-|----------------|-------------------------------------------------------------------|
-| `name`         | 唯一模板名，发送通知时引用此名称（必填）                         |
-| `channel`      | 渠道名，如 `feishu_app`、`email`、`sms`（必填）                  |
-| `body`         | 消息体，Go `text/template` 语法，变量来自 recipient KV map       |
-| `subject`      | 邮件主题，同样支持模板语法（email 渠道使用）                     |
-| `msgType`      | 消息格式，飞书渠道使用：`text` / `post` / `interactive`           |
-| `templateCode` | 短信 / 语音服务商的模板 code（sms / voice 渠道使用）              |
+| Field | Description |
+| --- | --- |
+| `name` | Unique template name used by notification requests. Required. |
+| `channel` | Channel name, such as `feishu_app`, `email`, or `sms`. Required. |
+| `body` | Message body written with Go `text/template` syntax. |
+| `subject` | Email subject, also rendered with Go `text/template`. |
+| `msgType` | Message format used by Feishu channels: `text`, `post`, or `interactive`. |
+| `templateCode` | Provider-side template code used by SMS or voice channels. |
 
-**响应：** 返回创建的模板对象（HTTP 201）
+Response: the created template object with HTTP `201`.
 
-#### `GET /api/v1/templates` — 列出模板
+#### `GET /api/v1/templates` - List Templates
 
-可选 `?channel=feishu_app` 过滤特定渠道的模板。
+Use `?channel=feishu_app` to filter by channel.
 
-#### `GET /api/v1/templates/:name` — 获取模板
+#### `GET /api/v1/templates/:name` - Get a Template
 
-#### `PUT /api/v1/templates/:name` — 更新模板
+Returns the template identified by `name`.
 
-请求体与创建相同，`name` 和 `channel` 字段不可更改（通过 URL 参数指定）。
+#### `PUT /api/v1/templates/:name` - Update a Template
 
-#### `DELETE /api/v1/templates/:name` — 删除模板
+The request body uses the same shape as create. `name` and `channel` are not changed by this endpoint; the target template is selected by the URL parameter.
 
----
+#### `DELETE /api/v1/templates/:name` - Delete a Template
 
-### 健康检查
+Deletes the template identified by `name`.
+
+### Health Check
 
 #### `GET /health`
 
-数据库可达时返回 `200 {"status":"healthy"}`。
+Returns `200 {"status":"healthy"}` when the database is reachable.
 
-## 配置说明
+## Configuration
 
-完整示例见 `config.example.yaml`。
+See `config.example.yaml` for a complete example.
 
 ### `server`
 
-| 字段           | 默认值  | 说明          |
-|----------------|---------|---------------|
-| `address`      | `:8080` | HTTP 监听地址 |
-| `readTimeout`  | `30s`   | 读超时        |
-| `writeTimeout` | `30s`   | 写超时        |
-| `idleTimeout`  | `60s`   | 空闲超时      |
+| Field | Default | Description |
+| --- | --- | --- |
+| `address` | `:8080` | HTTP listen address. |
+| `readTimeout` | `30s` | HTTP read timeout. |
+| `writeTimeout` | `30s` | HTTP write timeout. |
+| `idleTimeout` | `60s` | HTTP idle timeout. |
 
 ### `database`
 
-| 字段              | 默认值          | 说明               |
-|-------------------|-----------------|--------------------|
-| `host`            | `localhost`     | PostgreSQL 主机    |
-| `port`            | `5432`          | PostgreSQL 端口    |
-| `user`            | `postgres`      | 数据库用户         |
-| `password`        |                 | 数据库密码         |
-| `dbname`          | `sealos_notify` | 数据库名           |
-| `sslMode`         | `disable`       | SSL 模式           |
-| `maxOpenConns`    | `25`            | 最大连接数         |
-| `maxIdleConns`    | `5`             | 最大空闲连接数     |
-| `connMaxLifetime` | `5m`            | 连接最大生命周期   |
+| Field | Default | Description |
+| --- | --- | --- |
+| `host` | `localhost` | PostgreSQL host. |
+| `port` | `5432` | PostgreSQL port. |
+| `user` | `postgres` | Database user. |
+| `password` | | Database password. |
+| `dbname` | `sealos_notify` | Database name. |
+| `sslMode` | `disable` | PostgreSQL SSL mode. |
+| `maxOpenConns` | `25` | Maximum open connections. |
+| `maxIdleConns` | `5` | Maximum idle connections. |
+| `connMaxLifetime` | `5m` | Maximum connection lifetime. |
 
 ### `dispatcher`
 
-| 字段           | 默认值 | 说明                                           |
-|----------------|--------|------------------------------------------------|
-| `enabled`      | `true` | 是否启用调度器                                 |
-| `interval`     | `10s`  | 轮询间隔                                       |
-| `batchSize`    | `100`  | 每轮次每类任务（pending/retry）的最大拉取数量  |
-| `leaseTimeout` | `5m`   | 任务租约超时（超时后任务可被其他副本重新获取） |
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enables the dispatcher. |
+| `interval` | `10s` | Queue polling interval. |
+| `batchSize` | `100` | Maximum number of pending and retry tasks claimed per cycle. |
+| `leaseTimeout` | `5m` | Processing lease timeout. Expired tasks can be reclaimed by another replica. |
 
 ### `auth`
 
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `enabled` | `true` | 是否开启 `/api/v1` 接口认证 |
-| `credentialsFilePath` |  | 应用凭证文件路径，推荐挂载 Kubernetes Secret |
-
-凭证文件变更会自动热加载到通知中心内存中。详细 Secret 格式、轮换方式和审计字段见 [docs/api-authentication.md](docs/api-authentication.md)。
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enables authentication for `/api/v1` endpoints. |
+| `credentialsFilePath` | | Path to the app credential file, usually mounted from a Kubernetes Secret. |
 
 ### `defaults`
 
-| 字段                  | 默认值           | 说明                          |
-|-----------------------|------------------|-------------------------------|
-| `maxRetry`            | `3`              | 最大重试次数（超过则标记 dead）|
-| `retryBackoffSeconds` | `[30, 120, 300]` | 各次重试的等待秒数            |
+| Field | Default | Description |
+| --- | --- | --- |
+| `maxRetry` | `3` | Maximum retry count before a task is marked `dead`. |
+| `retryBackoffSeconds` | `[30, 120, 300]` | Retry delay for each retry attempt. |
 
 ### `channels`
 
-每个 channel 项：
+Each channel entry has this shape:
 
 ```yaml
 channels:
   feishu_app:
     enabled: true
-    provider: feishu-app-urgent   # 引用 providers 中的 provider 名称
+    provider: feishu-app-urgent   # References a provider name under providers.
 ```
 
 ### `providers`
 
-每个 provider 的 `type` 决定使用的 Adapter，其余字段作为 `data` 传入 Adapter 构造函数。
+Each provider uses `type` to select an adapter. The remaining fields are passed to the adapter constructor as provider data.
 
-## 飞书加急通知
+## Feishu Urgent Notifications
 
-飞书加急（紧急通知）是飞书应用消息的特殊功能，可在普通消息基础上触发额外提醒：应用内弹窗加急、短信通知、电话通知。
+Feishu urgent notification is a Feishu app message feature. After the normal app message is created, the adapter can trigger an additional in-app urgent alert, SMS alert, or phone-call alert.
 
-### 配置步骤
+### Setup
 
-1. 在[飞书开放平台](https://open.feishu.cn/app)创建企业自建应用。
-2. 开通权限（"权限管理"页面）：
-   - `im:message:send_as_bot` — 以机器人身份发消息
-   - `im:message.group_urgent_app:create` — 应用内加急（`urgentType: app`）
-   - `im:message.group_urgent_sms:create` — 短信加急（`urgentType: sms`）
-   - `im:message.group_urgent_phone:create` — 电话加急（`urgentType: phone`）
-3. 在应用"凭证与基础信息"页获取 App ID 和 App Secret。
-4. 将机器人添加到目标群组，或确保有权限给用户发送单聊消息。
+1. Create an internal app in the [Feishu Open Platform](https://open.feishu.cn/app).
+2. Enable these permissions in the permission management page:
+   - `im:message:send_as_bot`: send messages as the bot.
+   - `im:message.group_urgent_app:create`: in-app urgent alert (`urgentType: app`).
+   - `im:message.group_urgent_sms:create`: SMS urgent alert (`urgentType: sms`).
+   - `im:message.group_urgent_phone:create`: phone-call urgent alert (`urgentType: phone`).
+3. Copy the App ID and App Secret from the app credentials page.
+4. Add the bot to target groups, or make sure it can send direct messages to the target users.
 
-### Provider 配置
+### Provider Configuration
 
 ```yaml
 channels:
@@ -330,54 +342,55 @@ providers:
     type: feishu_app
     appId: "cli_xxxxxxxxxxxxxxxx"
     appSecret: "xxxxxxxxxxxxxxxx"
-    receiveIdType: "open_id"   # open_id | user_id | union_id | email
-    urgentUserIdType: "open_id" # open_id | user_id | union_id；默认跟随 receiveIdType（email/chat_id 除外）
-    msgType: "text"            # text | post | interactive
-    urgentType: "app"          # app | sms | phone | ""（空为不加急）
+    receiveIdType: "open_id"    # open_id | user_id | union_id | email
+    urgentUserIdType: "open_id" # open_id | user_id | union_id; defaults to receiveIdType except email/chat_id
+    msgType: "text"             # text | post | interactive
+    urgentType: "app"           # app | sms | phone | empty string disables urgent alerts
 ```
 
-### Adapter 执行逻辑
+### Adapter Flow
 
-1. 调用飞书 `im.v1.message.create` API 发送消息。
-2. 获取返回的 `message_id`，调用对应加急 API（`urgent_app` / `urgent_sms` / `urgent_phone`）。
-3. 加急调用失败不影响主消息的投递结果（非致命错误，记录在 `details.urgent_error`）。
+1. Calls Feishu `im.v1.message.create` to send the message.
+2. Extracts the returned `message_id` and calls the selected urgent API: `urgent_app`, `urgent_sms`, or `urgent_phone`.
+3. Urgent API failures do not fail the main delivery because the message has already been created. The error is stored in `details.urgent_error`.
 
-### `receiveIdType` 与接收人标识键对应关系
+### `receiveIdType` to Recipient Key Mapping
 
-| `receiveIdType` | recipient map 中的键 |
-|-----------------|----------------------|
-| `open_id`       | `feishu_user_id`     |
-| `user_id`       | `feishu_user_id`     |
-| `union_id`      | `feishu_user_id`     |
-| `email`         | `email`              |
+| `receiveIdType` | Recipient key |
+| --- | --- |
+| `open_id` | `feishu_user_id` |
+| `user_id` | `feishu_user_id` |
+| `union_id` | `feishu_user_id` |
+| `email` | `email` |
 
-## 项目结构
+## Project Layout
 
-```
+```text
 sealos-notify/
-├── main.go                         # 程序入口
-├── config.example.yaml             # 配置示例
+├── main.go                         # Program entrypoint
+├── config.example.yaml             # Example configuration
 ├── pkg/
-│   ├── config/                     # 配置加载与热重载
-│   ├── logger/                     # 日志初始化
-│   ├── database/                   # 数据库连接（GORM）与 Schema 初始化
-│   ├── storage/                    # 数据访问层（GORM ORM）
-│   │   ├── notification.go         # 通知与接收人存储
-│   │   ├── delivery.go             # 投递任务与投递记录存储
-│   │   └── template.go             # 模板存储（CRUD）
-│   ├── render/                     # 模板渲染（text/template）
-│   ├── engine/                     # 通知引擎（请求校验、任务生成）
-│   ├── dispatcher/                 # 任务调度器（轮询、并发分发、重试）
+│   ├── config/                     # Configuration loading and hot reload
+│   ├── logger/                     # Logger setup
+│   ├── database/                   # GORM database connection and schema initialization
+│   ├── storage/                    # Data access layer
+│   │   ├── notification.go         # Notification and recipient storage
+│   │   ├── delivery.go             # Delivery task and attempt storage
+│   │   └── template.go             # Template CRUD storage
+│   ├── render/                     # Template rendering with text/template
+│   ├── engine/                     # Request validation and task generation
+│   ├── dispatcher/                 # Queue polling, dispatch, and retry logic
 │   └── adapter/
-│       ├── adapter.go              # Adapter 接口定义
-│       └── feishu_app/             # 飞书应用加急通知 Adapter
-├── server/                         # HTTP 服务器、路由与 Handler
-└── deploy/kubernetes/              # K8s 部署 manifests
+│       ├── adapter.go              # Adapter interface definitions
+│       └── feishu_app/             # Feishu app urgent notification adapter
+├── server/                         # HTTP server, routes, and handlers
+└── deploy/kubernetes/              # Kubernetes manifests
 ```
 
-## 添加新渠道
+## Adding a New Channel
 
-1. 在 `pkg/adapter/<channel_name>/` 下创建目录，实现 `adapter.Adapter` 接口：
+1. Create `pkg/adapter/<channel_name>/` and implement the `adapter.Adapter` interface:
+
    ```go
    type Adapter interface {
        Send(ctx context.Context, request *SendRequest) (*SendResponse, error)
@@ -386,23 +399,27 @@ sealos-notify/
        Validate() error
    }
    ```
-2. 在 `pkg/adapter/adapter.go` 的 `RecipientIdentifierKeys()` 中为新渠道添加标识键映射。
-3. 在 `server/server.go` 的 `initAdapters()` 中注册该类型：
+
+2. Add the recipient identifier mapping in `RecipientIdentifierKeys()` in `pkg/adapter/adapter.go`.
+3. Register the provider type in `server/server.go`:
+
    ```go
    case "my_channel":
        a, err := mychannel.New(providerConfig.Data)
        s.adapters[providerName] = a
    ```
-4. 在 `config.example.yaml` 中添加对应的 channel 和 provider 示例配置。
 
-## Kubernetes 部署
+4. Add example channel and provider configuration to `config.example.yaml`.
+
+## Kubernetes Deployment
 
 ```bash
-# 构建并推送镜像到 DockerHub
+# Build and push the image to Docker Hub.
 make docker-build IMAGE=docker.io/<dockerhub-user>/sealos-notify VERSION=test
 make docker-push IMAGE=docker.io/<dockerhub-user>/sealos-notify VERSION=test
 
-# 按镜像名更新 deploy/kubernetes/deployment.yaml 后创建飞书凭证 Secret 和 API 认证 Secret
+# Update deploy/kubernetes/deployment.yaml with the image name, then create
+# the Feishu credential Secret and API authentication Secret.
 kubectl create namespace ns-admin --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret generic sealos-notify-feishu \
   --from-literal=app-id=cli_xxxxxxxxxxxxxxxx \
@@ -412,20 +429,20 @@ kubectl create secret generic sealos-notify-api-auth \
   --from-file=apps.yaml=/path/to/apps.yaml \
   -n ns-admin
 
-# 部署
+# Deploy.
 kubectl apply -f deploy/kubernetes/
 ```
 
-默认测试环境清单使用：
+The default test manifests use:
 
-| 项目 | 值 |
-|------|----|
+| Item | Value |
+| --- | --- |
 | namespace | `ns-admin` |
 | PostgreSQL host | `sealos-notify-pg-postgresql-0.sealos-notify-pg-postgresql-hl.ns-admin.svc.cluster.local` |
 | PostgreSQL Secret | `sealos-notify-pg-postgresql` / `postgres-password` |
-| 服务地址 | `http://sealos-notify.ns-admin.svc.cluster.local:8080` |
+| Service URL | `http://sealos-notify.ns-admin.svc.cluster.local:8080` |
 
-验收发送链路：
+Smoke-test the send path:
 
 ```bash
 kubectl -n ns-admin port-forward svc/sealos-notify 8080:8080
@@ -434,39 +451,40 @@ curl -X POST http://localhost:8080/api/v1/templates \
   -H "Content-Type: application/json" \
   -H "X-App-Id: notify-console" \
   -H "X-App-Secret: CHANGE_ME_TO_A_LONG_RANDOM_SECRET" \
-  -d '{"name":"feishu-urgent-test","channel":"feishu_app","body":"【测试加急】{{ .message }}","msgType":"text"}'
+  -d '{"name":"feishu-urgent-test","channel":"feishu_app","body":"[Urgent test] {{ .message }}","msgType":"text"}'
 
 curl -X POST http://localhost:8080/api/v1/notifications \
   -H "Content-Type: application/json" \
   -H "X-App-Id: notify-console" \
   -H "X-App-Secret: CHANGE_ME_TO_A_LONG_RANDOM_SECRET" \
-  -d '{"idempotencyKey":"feishu-urgent-test-001","channels":{"feishu_app":{"template":"feishu-urgent-test","params":{"message":"sealos-notify 测试环境联调"}}},"recipients":[{"type":"feishu_user_id","value":"ou_xxxxxxxxxxxxxxxx"}]}'
+  -d '{"idempotencyKey":"feishu-urgent-test-001","channels":{"feishu_app":{"template":"feishu-urgent-test","params":{"message":"sealos-notify staging integration test"}}},"recipients":[{"type":"feishu_user_id","value":"ou_xxxxxxxxxxxxxxxx"}]}'
 ```
 
-多副本场景下直接调整 Deployment 的 `replicas`，各副本通过数据库任务队列自动分工，无需额外配置。
+For multiple replicas, update the Deployment `replicas` field. Replicas automatically share work through the database delivery queue.
 
-## 环境变量覆盖
+## Environment Variable Overrides
 
-所有配置字段均可通过环境变量覆盖：
+Configuration fields can be overridden with environment variables:
 
-| 环境变量前缀   | 对应配置节    |
-|----------------|---------------|
-| `SERVER_`      | `server`      |
-| `DATABASE_`    | `database`    |
-| `LOGGING_`     | `logging`     |
-| `DISPATCHER_`  | `dispatcher`  |
-| `AUTH_`        | `auth`        |
+| Environment variable prefix | Configuration section |
+| --- | --- |
+| `SERVER_` | `server` |
+| `DATABASE_` | `database` |
+| `LOGGING_` | `logging` |
+| `DISPATCHER_` | `dispatcher` |
+| `AUTH_` | `auth` |
 
-示例：`DATABASE_HOST=db.prod DATABASE_PASSWORD=secret ./sealos-notify -c config.yaml`
+Example: `DATABASE_HOST=db.prod DATABASE_PASSWORD=secret ./sealos-notify -c config.yaml`
 
-## 构建
+## Build
 
 ```bash
-make build         # 构建二进制
-make docker-build  # 构建 Docker 镜像
-make run           # 本地运行（需要 PostgreSQL）
+make build         # Build the binary.
+make docker-build  # Build the Docker image.
+make run           # Run locally; requires PostgreSQL.
+make test          # Run unit tests with race detection and coverage.
 ```
 
-## 许可证
+## License
 
 Apache 2.0

@@ -132,9 +132,9 @@ providers:
     #   interactive - Card message
     msgType: "text"
     # Urgent notification mode (leave empty to disable):
-    #   app   - In-app urgent alert (应用内加急)
-    #   sms   - SMS urgent alert    (短信加急)
-    #   phone - Phone call alert    (电话加急)
+    #   app   - In-app urgent alert
+    #   sms   - SMS urgent alert
+    #   phone - Phone call alert
     urgentType: "app"
 
 # Templates are managed at runtime via the REST API (/api/v1/templates).
