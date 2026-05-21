@@ -30,6 +30,8 @@ COPY --from=builder /workspace/sealos-notify .
 # Copy example config
 COPY config.example.yaml /etc/sealos-notify/config.yaml
 
+USER sealos-notify:sealos-notify
+
 # Expose port
 EXPOSE 8080
 
