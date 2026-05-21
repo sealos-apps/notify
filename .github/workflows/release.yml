@@ -90,7 +90,7 @@ jobs:
             type=raw,value=sha-${{ steps.source.outputs.sha_short }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
