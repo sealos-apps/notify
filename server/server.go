@@ -167,8 +167,17 @@ func (s *Server) initAdapters() error {
 func (s *Server) setupHTTPServer() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	router.Use(gin.Recovery())
+	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		s.logger.WithField("panic", recovered).Error("Recovered from HTTP panic")
+		internalServerError(c)
+	}))
 	router.Use(s.loggingMiddleware())
+	router.NoRoute(func(c *gin.Context) {
+		respondError(c, http.StatusNotFound, errorCodeNotFound, "route not found")
+	})
+	router.NoMethod(func(c *gin.Context) {
+		respondError(c, http.StatusNotFound, errorCodeNotFound, "route not found")
+	})
 
 	s.setupRoutes(router)
 

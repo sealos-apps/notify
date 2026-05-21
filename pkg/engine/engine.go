@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -12,6 +13,9 @@ import (
 	"github.com/labring/sealos-notify/pkg/storage"
 	log "github.com/sirupsen/logrus"
 )
+
+// ErrInvalidRequest marks user input validation failures.
+var ErrInvalidRequest = errors.New("invalid request")
 
 // ChannelRequest specifies the template and render params for one channel.
 // All recipients within a single notification receive identical rendered content.
@@ -108,7 +112,7 @@ func New(
 // SendNotification validates the request, creates notification records, recipients, and delivery tasks
 func (e *Engine) SendNotification(ctx context.Context, req *SendNotificationRequest) (*SendNotificationResponse, error) {
 	if err := e.validateRequest(ctx, req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 
 	// Create notification record

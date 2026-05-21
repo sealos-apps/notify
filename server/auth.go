@@ -19,17 +19,13 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 		appID, appSecret := credentialsFromRequest(c)
 		if appID == "" || appSecret == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "missing app credentials",
-			})
+			abortWithError(c, http.StatusUnauthorized, errorCodeUnauthorized, "missing app credentials")
 			return
 		}
 
 		principal, ok := s.authManager.Authenticate(appID, appSecret)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "invalid app credentials",
-			})
+			abortWithError(c, http.StatusUnauthorized, errorCodeUnauthorized, "invalid app credentials")
 			return
 		}
 
