@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sealos-notify-contactpoint
+  namespace: grafana
+type: Opaque
+stringData:
+  bearer-token: notify-console:CHANGE_ME_TO_A_LONG_RANDOM_SECRET
+  feishu-open-id: ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaContactPoint
+metadata:
+  name: sealos-notify-feishu-urgent
+  namespace: grafana
+spec:
+  allowCrossNamespaceImport: false
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  name: sealos-notify-feishu-urgent
+  resyncPeriod: 10m0s
+  settings:
+    url: http://sealos-notify.ns-admin.svc.cluster.local:8080/api/v1/notifications
+    httpMethod: POST
+    authorization_scheme: Bearer
+    payload:
+      template: |
+        {{- $fingerprint := .GroupKey -}}
+        {{- if gt (len .Alerts) 0 -}}
+          {{- $fingerprint = (index .Alerts 0).Fingerprint -}}
+        {{- end -}}
+        {{ coll.Dict
+          "idempotencyKey" (printf "grafana-%s-%s" .Status $fingerprint)
+          "channels" (coll.Dict
+            "feishu_app" (coll.Dict
+              "template" "feishu-grafana-alert"
+              "params" (coll.Dict
+                "status" .Status
+                "alertname" .CommonLabels.alertname
+                "severity" .CommonLabels.severity
+                "summary" .CommonAnnotations.summary
+                "description" .CommonAnnotations.description
+                "groupKey" .GroupKey
+                "externalURL" .ExternalURL
+              )
+            )
+          )
+          "recipients" (coll.Slice
+            (coll.Dict
+              "type" "feishu_user_id"
+              "value" .Vars.feishu_open_id
+            )
+          )
+        | data.ToJSON }}
+      vars:
+        feishu_open_id: ""
+  type: webhook
+  valuesFrom:
+    - targetPath: authorization_credentials
+      valueFrom:
+        secretKeyRef:
+          name: sealos-notify-contactpoint
+          key: bearer-token
+    - targetPath: payload.vars.feishu_open_id
+      valueFrom:
+        secretKeyRef:
+          name: sealos-notify-contactpoint
+          key: feishu-open-id
